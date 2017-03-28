@@ -11,6 +11,13 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
+extern "C" {
+    void __stginit_Looper();
+    void hs_init(int*, char***);
+    void hs_add_root(void (*)());
+    void hs_exit();
+}
+
 
 //==============================================================================
 LukeperAudioProcessor::LukeperAudioProcessor()
@@ -28,10 +35,14 @@ LukeperAudioProcessor::LukeperAudioProcessor()
      , _recording(true)
 #endif
 {
+    hs_init(NULL, NULL);
+    hs_add_root(__stginit_Looper);
+    
 }
 
 LukeperAudioProcessor::~LukeperAudioProcessor()
 {
+    hs_exit();
 }
 
 //==============================================================================

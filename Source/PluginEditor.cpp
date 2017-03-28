@@ -12,6 +12,10 @@
 #include "PluginEditor.h"
 
 
+extern "C" {
+    int foo(int);
+}
+
 //==============================================================================
 LukeperAudioProcessorEditor::LukeperAudioProcessorEditor (LukeperAudioProcessor& p)
     : AudioProcessorEditor (&p), _processor (p)
@@ -34,11 +38,13 @@ void LukeperAudioProcessorEditor::paint (Graphics& g)
     g.setFont (15.0f);
     if (_processor.recording()) {
         juce::String s("recording: ");
+        s += foo(41);
         s += _processor.loopBufIndex();
         g.drawFittedText (s, getLocalBounds(), Justification::centred, 1);
     }
     else {
         juce::String s("playing: ");
+        s += foo(41);
         s += _processor.loopBufIndex();
         g.drawFittedText (s, getLocalBounds(), Justification::centred, 1);
     }
