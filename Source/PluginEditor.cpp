@@ -34,6 +34,7 @@ void LukeperAudioProcessorEditor::paint (Graphics& g)
 {
     g.fillAll (Colours::white);
 
+    /*
     g.setColour (Colours::black);
     g.setFont (15.0f);
     if (_processor.recording()) {
@@ -49,6 +50,7 @@ void LukeperAudioProcessorEditor::paint (Graphics& g)
         g.drawFittedText (s, getLocalBounds(), Justification::centred, 1);
     }
     repaint();
+    */
 }
 
 void LukeperAudioProcessorEditor::resized()

@@ -29,6 +29,7 @@
 		20B0FAB20220943E4C5E0693 /* juce_audio_plugin_client_VST_utils.mm in Sources */ = {isa = PBXBuildFile; fileRef = 7AECE73A05FD1AD58BEF9485 /* juce_audio_plugin_client_VST_utils.mm */; };
 		23F16D030F5404F4AB1887E9 /* IOKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4CEF483BE42C068340B210B3 /* IOKit.framework */; };
 		38219618260C2A910EDB1B51 /* juce_graphics.mm in Sources */ = {isa = PBXBuildFile; fileRef = 7F356CD8A346F62473AC3F0B /* juce_graphics.mm */; };
+		434390CC1E8B29390073B663 /* HsLooper.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 434390CB1E8B29390073B663 /* HsLooper.cpp */; };
 		4C488D073F14B7049D307124 /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3F22F301FDC9A7FAEA645793 /* Cocoa.framework */; };
 		4E911C40EAC761B432BEA3B8 /* juce_audio_devices.mm in Sources */ = {isa = PBXBuildFile; fileRef = B9CA35202E674BD85169E451 /* juce_audio_devices.mm */; };
 		54D26727E4E9D239581C2289 /* juce_video.mm in Sources */ = {isa = PBXBuildFile; fileRef = 80DD63EC7D147628F8A89D27 /* juce_video.mm */; };
@@ -410,6 +411,8 @@
 		42FA18D0DA639782853B05A9 /* juce_FileInputSource.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = juce_FileInputSource.h; path = ../../../../JUCE/modules/juce_core/streams/juce_FileInputSource.h; sourceTree = SOURCE_ROOT; };
 		431F07BA45036C97209C800C /* juce_Drawable.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = juce_Drawable.cpp; path = ../../../../JUCE/modules/juce_gui_basics/drawables/juce_Drawable.cpp; sourceTree = SOURCE_ROOT; };
 		43260CBCF01530E3FEBA2334 /* ComponentBase.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = ComponentBase.h; path = ../../../../JUCE/modules/juce_audio_plugin_client/AU/CoreAudioUtilityClasses/ComponentBase.h; sourceTree = SOURCE_ROOT; };
+		434390CA1E8B28780073B663 /* HsLooper.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = HsLooper.h; path = ../../Source/HsLooper.h; sourceTree = "<group>"; };
+		434390CB1E8B29390073B663 /* HsLooper.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; name = HsLooper.cpp; path = ../../Source/HsLooper.cpp; sourceTree = "<group>"; };
 		436180307CF1349277A68AAB /* CAXException.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = CAXException.h; path = ../../../../JUCE/modules/juce_audio_plugin_client/AU/CoreAudioUtilityClasses/CAXException.h; sourceTree = SOURCE_ROOT; };
 		4366489A0E839C5D2C4F7CCC /* juce_Value.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = juce_Value.cpp; path = ../../../../JUCE/modules/juce_data_structures/values/juce_Value.cpp; sourceTree = SOURCE_ROOT; };
 		436B54BE4AD32D5E009D914D /* juce_StandaloneFilterApp.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = juce_StandaloneFilterApp.cpp; path = ../../../../JUCE/modules/juce_audio_plugin_client/Standalone/juce_StandaloneFilterApp.cpp; sourceTree = SOURCE_ROOT; };
@@ -1847,6 +1850,8 @@
 				D54247651C79C8E3BE6F851A /* PluginProcessor.h */,
 				B62D929B13EBD4C36D16EBA5 /* PluginEditor.cpp */,
 				E19EBEF3ADAC2FC7593F1CBD /* PluginEditor.h */,
+				434390CA1E8B28780073B663 /* HsLooper.h */,
+				434390CB1E8B29390073B663 /* HsLooper.cpp */,
 			);
 			name = Source;
 			sourceTree = "<group>";
@@ -3718,7 +3723,7 @@
 		51CB9DFC488EC2CB1D57EAFC /* Project object */ = {
 			isa = PBXProject;
 			attributes = {
-				LastUpgradeCheck = 0440;
+				LastUpgradeCheck = 0820;
 				TargetAttributes = {
 					083B534C377E25403AF85D79 = {
 						SystemCapabilities = {
@@ -3797,6 +3802,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				434390CC1E8B29390073B663 /* HsLooper.cpp in Sources */,
 				729C0D5FBBBCC331C87D9957 /* juce_audio_plugin_client_AU_1.mm in Sources */,
 				7502A11A5999FD03CC00FDFF /* juce_audio_plugin_client_AU_2.mm in Sources */,
 			);
@@ -3987,16 +3993,31 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				GCC_C_LANGUAGE_STANDARD = c99;
 				GCC_INLINES_ARE_PRIVATE_EXTERN = YES;
 				GCC_MODEL_TUNING = G5;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
 				GCC_WARN_ABOUT_RETURN_TYPE = YES;
 				GCC_WARN_CHECK_SWITCH_STATEMENTS = YES;
 				GCC_WARN_MISSING_PARENTHESES = YES;
 				GCC_WARN_NON_VIRTUAL_DESTRUCTOR = YES;
 				GCC_WARN_TYPECHECK_CALLS_TO_PRINTF = YES;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES;
+				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				PRODUCT_NAME = lukeper;
@@ -4009,15 +4030,30 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				GCC_C_LANGUAGE_STANDARD = c99;
 				GCC_INLINES_ARE_PRIVATE_EXTERN = YES;
 				GCC_MODEL_TUNING = G5;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
 				GCC_WARN_ABOUT_RETURN_TYPE = YES;
 				GCC_WARN_CHECK_SWITCH_STATEMENTS = YES;
 				GCC_WARN_MISSING_PARENTHESES = YES;
 				GCC_WARN_NON_VIRTUAL_DESTRUCTOR = YES;
 				GCC_WARN_TYPECHECK_CALLS_TO_PRINTF = YES;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES;
+				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				PRODUCT_NAME = lukeper;
 				WARNING_CFLAGS = "-Wreorder";

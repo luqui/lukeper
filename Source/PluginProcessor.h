@@ -12,7 +12,7 @@
 #define PLUGINPROCESSOR_H_INCLUDED
 
 #include "../JuceLibraryCode/JuceHeader.h"
-
+#include "HsLooper.h"
 
 //==============================================================================
 /**
@@ -55,16 +55,11 @@ public:
     //==============================================================================
     void getStateInformation (MemoryBlock& destData) override;
     void setStateInformation (const void* data, int sizeInBytes) override;
-    
-    bool recording() const { return _recording; }
-    int loopBufIndex() const { return _loopBufIndex; }
 
 private:
     //==============================================================================
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LukeperAudioProcessor)
-    std::vector<float> _loopBuffer;
-    int _loopBufIndex;
-    bool _recording;
+    HsLooper _hslooper;
 };
 
 

@@ -11,13 +11,6 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
-extern "C" {
-    void __stginit_Looper();
-    void hs_init(int*, char***);
-    void hs_add_root(void (*)());
-    void hs_exit();
-}
-
 
 //==============================================================================
 LukeperAudioProcessor::LukeperAudioProcessor()
@@ -30,20 +23,11 @@ LukeperAudioProcessor::LukeperAudioProcessor()
                        .withOutput ("Output", AudioChannelSet::stereo(), true)
                      #endif
                        )
-     , _loopBuffer(44100)
-     , _loopBufIndex(0)
-     , _recording(true)
 #endif
-{
-    hs_init(NULL, NULL);
-    hs_add_root(__stginit_Looper);
-    
-}
+{ }
 
 LukeperAudioProcessor::~LukeperAudioProcessor()
-{
-    hs_exit();
-}
+{ }
 
 //==============================================================================
 const String LukeperAudioProcessor::getName() const
@@ -146,31 +130,11 @@ void LukeperAudioProcessor::processBlock (AudioSampleBuffer& buffer, MidiBuffer&
     // This is here to avoid people getting screaming feedback
     // when they first compile a plugin, but obviously you don't need to keep
     // this code if your algorithm always overwrites all the output channels.
-
-
-    if (_recording) {
-        int i = 0;
-        while(_loopBufIndex < _loopBuffer.size() && i < buffer.getNumSamples()) {
-            _loopBuffer[_loopBufIndex++] = buffer.getSample(0, i++);
-        }
-        if (_loopBufIndex == _loopBuffer.size()) {
-            _recording = false;
-            _loopBufIndex = 0;
-        }
-    }
-    else {
-        int i = 0;
-        while(_loopBufIndex < _loopBuffer.size() && i < buffer.getNumSamples()) {
-            buffer.setSample(0, i++, _loopBuffer[_loopBufIndex++]);
-        }
-        if (_loopBufIndex == _loopBuffer.size()) {
-            _recording = true;
-            _loopBufIndex = 0;
-        }
-    }
-    
-    for (int i = (int)!_recording; i < totalNumOutputChannels; ++i)
+    for (int i = totalNumInputChannels; i < totalNumOutputChannels; ++i)
         buffer.clear (i, 0, buffer.getNumSamples());
+
+    _hslooper.process_samples(buffer.getNumSamples(), totalNumInputChannels, totalNumOutputChannels,
+                   buffer.getArrayOfWritePointers());
 }
 
 //==============================================================================
