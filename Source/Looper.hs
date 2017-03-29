@@ -4,10 +4,13 @@ module Looper where
 
 import qualified Foreign.Ptr as Foreign
 import qualified Foreign.Marshal.Array as Foreign
+import qualified System.MIDI as MIDI
+import qualified Data.Time.Clock as Clock
 
-import Control.Monad (forM_)
+import Control.Monad (forM_, filterM)
 import System.IO (withFile, IOMode(AppendMode), hPutStrLn)
 
+import Data.IORef
 import Data.Word
 import Foreign.StablePtr
 import Foreign.Storable
@@ -41,14 +44,37 @@ instance Storable MarshalMidiMessage where
         pokeByteOff ptr 5 mmmByte2
         pokeByteOff ptr 6 mmmByte3
 
-data LooperState = LooperState Int
+data LooperState = LooperState 
+    { lsMidiSource :: MIDI.Connection
+    , lsMidiDest   :: MIDI.Connection
+    }
 
-hs_looper_init = newStablePtr (LooperState 0)
+findConnection :: (MIDI.MIDIHasName a) => String -> [a] -> IO a
+findConnection name = fmap head . filterM (\c -> (name ==) <$> MIDI.getName c)
+    where
+    getConn (x:_) = x
+    getConn [] = error $ "No MIDI device with name " ++ show name
+
+hs_looper_init = do
+    source <- flip MIDI.openSource Nothing =<< findConnection "APC40 mkII" =<< MIDI.enumerateSources
+    dest <- MIDI.openDestination =<< findConnection "APC40 mkII" =<< MIDI.enumerateDestinations
+    MIDI.start source
+    newStablePtr $ LooperState source dest
 hs_looper_main state window input output channels midiMessages midiData outMessages = do
+    {-
     withFile "/tmp/looperlog" AppendMode $ \h -> do
         forM_ [0..fromIntegral midiMessages-1] $ \i -> do
             msg <- peekElemOff midiData i
             hPutStrLn h $ "  " ++ show (mmmSamplePosition msg) ++ " " ++ show (mmmByte1 msg) ++ " " ++ show (mmmByte2 msg) ++ " " ++ show (mmmByte3 msg)
+    -}
+    LooperState src dest <- deRefStablePtr state
+    time <- floor . realToFrac . Clock.utctDayTime <$> Clock.getCurrentTime
+    MIDI.send dest $ MIDI.MidiMessage 0 (MIDI.NoteOn 32 (fromIntegral (time `mod` 128)))
     poke outMessages 0
     Foreign.mallocArray 0
-hs_looper_exit state = freeStablePtr state
+hs_looper_exit state = do
+    LooperState src dest <- deRefStablePtr state
+    MIDI.stop src
+    MIDI.close src
+    MIDI.close dest
+    freeStablePtr state

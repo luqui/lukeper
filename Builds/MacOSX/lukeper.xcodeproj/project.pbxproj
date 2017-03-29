@@ -3895,6 +3895,11 @@
 					"-L/Library/Frameworks/GHC.framework/Versions/8.0.1-x86_64/usr/lib/ghc-8.0.1/base-4.9.0.0",
 					"-L/Library/Frameworks/GHC.framework/Versions/8.0.1-x86_64/usr/lib/ghc-8.0.1/ghc-prim-0.5.0.0",
 					"-L/Library/Frameworks/GHC.framework/Versions/8.0.1-x86_64/usr/lib/ghc-8.0.1/rts",
+                    "-L/Users/luqui/Library/Haskell/ghc-8.0.1-x86_64/lib/hmidi-0.2.2.1",
+                    "-L/Library/Frameworks/GHC.framework/Versions/8.0.1-x86_64/usr/lib/ghc-8.0.1/base-4.9.0.0",
+                    "-L/Users/luqui/Library/Haskell/ghc-8.0.1-x86_64/lib/stm-2.4.4.1",
+                    "-L/Library/Frameworks/GHC.framework/Versions/8.0.1-x86_64/usr/lib/ghc-8.0.1/time-1.6.0.1",
+                    "-L/Library/Frameworks/GHC.framework/Versions/8.0.1-x86_64/usr/lib/ghc-8.0.1/deepseq-1.4.2.0",
 					build/Debug/Looper.o,
 					"-bundle",
 					"-llukeper",
@@ -3906,6 +3911,11 @@
 					"-lm",
 					"-liconv",
 					"-lCffi",
+                    "-lHShmidi-0.2.2.1-6ii9w1Kgso45XlvZJdRiIb",
+                    "-lHSbase-4.9.0.0",
+                    "-lHSstm-2.4.4.1-4z2NRWnB0NIIUvSJsHW0kF",
+                    "-lHStime-1.6.0.1",
+                    "-lHSdeepseq-1.4.2.0",
 					"-Wl,-no_compact_unwind",
 				);
 				OTHER_REZFLAGS = "-d ppc_$ppc -d i386_$i386 -d ppc64_$ppc64 -d x86_64_$x86_64 -I /System/Library/Frameworks/CoreServices.framework/Frameworks/CarbonCore.framework/Versions/A/Headers -I \"$(DEVELOPER_DIR)/Extras/CoreAudio/AudioUnits/AUPublic/AUBase\"";

@@ -160,7 +160,9 @@ void LukeperAudioProcessor::processBlock (AudioSampleBuffer& buffer, MidiBuffer&
         buffer.getArrayOfWritePointers(), msg_count - ignore_count, in_messages, &out_msg_count);
     free(in_messages);
 
+    // Apparently this does not actually filter midi messages, they are just getting passed through.
     midiMessages.clear();
+    /*
     midiMessages.ensureSize(9*out_msg_count);
     for (int i = 0; i < out_msg_count; i++) {
         switch (MidiMessage::getMessageLengthFromFirstByte(out_messages[i].message[0])) {
@@ -175,6 +177,8 @@ void LukeperAudioProcessor::processBlock (AudioSampleBuffer& buffer, MidiBuffer&
                 break;
         }
     }
+    */
+    free(out_messages);
 }
 
 //==============================================================================
