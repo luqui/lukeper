@@ -9,9 +9,11 @@
 #ifndef HsLooper_h
 #define HsLooper_h
 
+#include "../JuceLibraryCode/JuceHeader.h"
+
 struct MarshalMidiMessage {
     MarshalMidiMessage() { }
-    MarshalMidiMessage(int samplePosition, unsigned char msg1, unsigned char msg2, unsigned char msg3) 
+    MarshalMidiMessage(uint32 samplePosition, uint8 msg1, uint8 msg2, uint8 msg3) 
         : samplePosition(samplePosition)
     {
         message[0] = msg1;
@@ -19,8 +21,8 @@ struct MarshalMidiMessage {
         message[2] = msg3;
     }
 
-    int samplePosition;
-    unsigned char message[3];
+    uint32 samplePosition;
+    uint8 message[3];
 };
 
 class HsLooper {
@@ -28,8 +30,8 @@ public:
     HsLooper();
     ~HsLooper();
     
-    MarshalMidiMessage* process_samples(int window_size, int in_channels, int out_channels, float** channel_data,
-                                        int midi_messages, MarshalMidiMessage* message_data, int* out_message_count);
+    MarshalMidiMessage* process_samples(uint32 window_size, uint32 in_channels, uint32 out_channels, float** channel_data,
+                                        uint32 midi_messages, MarshalMidiMessage* message_data, uint32* out_message_count);
 private:
     void* _state;
 };

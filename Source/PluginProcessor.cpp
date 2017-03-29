@@ -154,7 +154,7 @@ void LukeperAudioProcessor::processBlock (AudioSampleBuffer& buffer, MidiBuffer&
         msg_count++;
     }
 
-    int out_msg_count = 0;
+    uint32 out_msg_count = 0;
     MarshalMidiMessage* out_messages = _hslooper.process_samples(
         buffer.getNumSamples(), totalNumInputChannels, totalNumOutputChannels, 
         buffer.getArrayOfWritePointers(), msg_count - ignore_count, in_messages, &out_msg_count);
