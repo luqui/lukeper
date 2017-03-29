@@ -133,52 +133,8 @@ void LukeperAudioProcessor::processBlock (AudioSampleBuffer& buffer, MidiBuffer&
     for (int i = totalNumInputChannels; i < totalNumOutputChannels; ++i)
         buffer.clear (i, 0, buffer.getNumSamples());
 
-    MarshalMidiMessage* in_messages = (MarshalMidiMessage*)malloc(midiMessages.getNumEvents()*sizeof(MarshalMidiMessage));
-    MidiBuffer::Iterator iter(midiMessages);
-    MidiMessage msg;
-    int samplePos;
-    int msg_count = 0;
-    int ignore_count = 0;
-    while (iter.getNextEvent(msg, samplePos)) {
-        int dataBytes = msg.getRawDataSize();
-        const uint8* data = msg.getRawData();
-        if (dataBytes <= 3) {
-            in_messages[msg_count].samplePosition = samplePos;
-            in_messages[msg_count].message[0] = dataBytes >= 1 ? data[0] : 0;
-            in_messages[msg_count].message[1] = dataBytes >= 2 ? data[1] : 0;
-            in_messages[msg_count].message[2] = dataBytes >= 3 ? data[2] : 0;
-        }
-        else {
-            ignore_count++;
-        }
-        msg_count++;
-    }
-
-    uint32 out_msg_count = 0;
-    MarshalMidiMessage* out_messages = _hslooper.process_samples(
-        buffer.getNumSamples(), totalNumInputChannels, totalNumOutputChannels, 
-        buffer.getArrayOfWritePointers(), msg_count - ignore_count, in_messages, &out_msg_count);
-    free(in_messages);
-
-    // Apparently this does not actually filter midi messages, they are just getting passed through.
-    midiMessages.clear();
-    /*
-    midiMessages.ensureSize(9*out_msg_count);
-    for (int i = 0; i < out_msg_count; i++) {
-        switch (MidiMessage::getMessageLengthFromFirstByte(out_messages[i].message[0])) {
-            case 1:
-                midiMessages.addEvent(MidiMessage(out_messages[i].message[0]), out_messages[i].samplePosition);
-                break;
-            case 2: 
-                midiMessages.addEvent(MidiMessage(out_messages[i].message[0], out_messages[i].message[1]), out_messages[i].samplePosition);
-                break;
-            case 3: 
-                midiMessages.addEvent(MidiMessage(out_messages[i].message[0], out_messages[i].message[1], out_messages[i].message[2]), out_messages[i].samplePosition); 
-                break;
-        }
-    }
-    */
-    free(out_messages);
+    _hslooper.process_samples(
+        buffer.getNumSamples(), totalNumInputChannels, totalNumOutputChannels, buffer.getArrayOfWritePointers());
 }
 
 //==============================================================================

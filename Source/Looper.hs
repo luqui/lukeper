@@ -2,10 +2,10 @@
 
 module Looper where
 
+import qualified Data.Time.Clock as Clock
 import qualified Foreign.Ptr as Foreign
 import qualified Foreign.Marshal.Array as Foreign
 import qualified System.MIDI as MIDI
-import qualified Data.Time.Clock as Clock
 
 import Control.Monad (forM_, filterM)
 import System.IO (withFile, IOMode(AppendMode), hPutStrLn)
@@ -22,10 +22,7 @@ foreign export ccall hs_looper_main
     -> Word32                          -- input channels
     -> Word32                          -- output channels
     -> Foreign.Ptr (Foreign.Ptr Float) -- channel data
-    -> Word32                          -- number of midi messages
-    -> Foreign.Ptr MarshalMidiMessage  -- midi data
-    -> Foreign.Ptr Word32              -- number of outbound midi messages
-    -> IO (Foreign.Ptr MarshalMidiMessage)
+    -> IO ()
 foreign export ccall hs_looper_exit :: StablePtr LooperState -> IO ()
 
 data MarshalMidiMessage = MarshalMidiMessage {
@@ -60,7 +57,7 @@ hs_looper_init = do
     dest <- MIDI.openDestination =<< findConnection "APC40 mkII" =<< MIDI.enumerateDestinations
     MIDI.start source
     newStablePtr $ LooperState source dest
-hs_looper_main state window input output channels midiMessages midiData outMessages = do
+hs_looper_main state window input output channels = do
     {-
     withFile "/tmp/looperlog" AppendMode $ \h -> do
         forM_ [0..fromIntegral midiMessages-1] $ \i -> do
@@ -70,8 +67,6 @@ hs_looper_main state window input output channels midiMessages midiData outMessa
     LooperState src dest <- deRefStablePtr state
     time <- floor . realToFrac . Clock.utctDayTime <$> Clock.getCurrentTime
     MIDI.send dest $ MIDI.MidiMessage 0 (MIDI.NoteOn 32 (fromIntegral (time `mod` 128)))
-    poke outMessages 0
-    Foreign.mallocArray 0
 hs_looper_exit state = do
     LooperState src dest <- deRefStablePtr state
     MIDI.stop src
