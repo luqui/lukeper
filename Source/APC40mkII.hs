@@ -42,8 +42,10 @@ module APC40mkII where
 -- let's see.
 
 import qualified System.MIDI.Base as MIDI
+import qualified System.MIDI as MIDI
+import Control.Monad (filterM)
 import Data.Kind (Constraint)
-import Data.Monoid (Monoid(..))
+import Data.Monoid (Monoid(..), Endo(..), (<>))
 
 class MonadStates (m :: * -> * -> *) where
     type Product m :: (* -> * -> *) -> Constraint
@@ -77,32 +79,44 @@ velToRGBColor v | 1 <= v && v <= 127 = RGBColor v
 
 data Subdiv = Subdiv24 | Subdiv16 | Subdiv8 | Subdiv4 | Subdiv2
     deriving (Eq, Show, Enum)
-data RGBDynamic = Primary | OneShot Subdiv | Pulsing Subdiv | Blinking Subdiv
+data RGBColorState 
+    = RGBOff 
+    | RGBSolid RGBColor 
+    | RGBOneShot Subdiv RGBColor RGBColor  -- start on color1 and gradually transition to color2, then stay at color2
+    | RGBPulsing Subdiv RGBColor RGBColor 
+    | RGBBlinking Subdiv RGBColor RGBColor
     deriving (Eq, Show)
-data RGBState = RGBOff | RGBState RGBColor RGBDynamic
-    deriving (Eq, Show)
+data RGBState = RGBState Bool RGBColorState  -- pressed, color
 
 rgbButton :: Int -> Control RGBState
 rgbButton note = Control to from
     where
-    to RGBOff = singleton (MIDI.MidiMessage 1 (MIDI.NoteOff note 0))
-    to (RGBState color dyn) = singleton (MIDI.MidiMessage (1+dynToChannel dyn) (MIDI.NoteOn note (rgbColorToVel color)))
+    to (RGBState _ s) = toS s
+
+    toS RGBOff = singleton (MIDI.MidiMessage 1 (MIDI.NoteOff note 0))
+    toS (RGBSolid color) = setPrimary color
+    toS (RGBOneShot  subdiv color1 color2) = 
+        setPrimary color1 <> singleton (MIDI.MidiMessage (1+1 +fromEnum subdiv) (MIDI.NoteOn note (rgbColorToVel color2)))
+    toS (RGBPulsing  subdiv color1 color2) = 
+        setPrimary color1 <> singleton (MIDI.MidiMessage (1+6 +fromEnum subdiv) (MIDI.NoteOn note (rgbColorToVel color2)))
+    toS (RGBBlinking subdiv color1 color2) =
+        setPrimary color1 <> singleton (MIDI.MidiMessage (1+11+fromEnum subdiv) (MIDI.NoteOn note (rgbColorToVel color2)))
+                                                   --     ^
+                                                   -- MidiMessage channels are 1-based
+
+    setPrimary color = singleton (MIDI.MidiMessage 1 (MIDI.NoteOn note (rgbColorToVel color)))
 
     from (MIDI.MidiMessage ch (MIDI.NoteOff note' _)) 
-        | note == note' = Just (const RGBOff)
+        | note == note' = Just . const $ RGBState False RGBOff
     from (MIDI.MidiMessage ch (MIDI.NoteOn note' vel))
         | note == note' = Just . const $
-            if vel == 0 then RGBOff
-                        else RGBState (velToRGBColor vel) (channelToDyn ch)
-    
-    dynToChannel Primary = 0
-    dynToChannel (OneShot  subdiv) = 1 + fromEnum subdiv
-    dynToChannel (Pulsing  subdiv) = 6 + fromEnum subdiv
-    dynToChannel (Blinking subdiv) = 11 + fromEnum subdiv
+            if vel == 0 then RGBState False RGBOff
+                        else RGBState True (RGBSolid (velToRGBColor 21)) -- 21 is the green color that is triggered on press
 
-    channelToDyn c
-        | c == 0 = Primary
-        | c < 6  = OneShot (toEnum (c-1))
-        | c < 11 = Pulsing (toEnum (c-6))
-        | c < 16 = Blinking (toEnum (c-11)) 
-        | otherwise = error $ "Invalid channel: " ++ show c
+
+
+openDev :: IO MIDI.Connection
+openDev = MIDI.openDestination . head =<< filterM (fmap ("APC40 mkII" ==) . MIDI.getName) =<< MIDI.enumerateDestinations
+
+setC :: MIDI.Connection -> Control a -> a -> IO ()
+setC conn ctrl x = appEndo (getSeq (toMIDI ctrl x) (Endo . (>>) . MIDI.send conn)) (return ())
