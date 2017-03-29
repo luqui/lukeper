@@ -15,7 +15,15 @@ extern "C" {
     
     void __stginit_Looper();
     void* hs_looper_init();
-    void hs_looper_main(void* state, int window, int in_channels, int out_channels, float** channel_data);
+    MarshalMidiMessage* hs_looper_main(
+        void* state,
+        int window,
+        int in_channels,
+        int out_channels,
+        float** channel_data,
+        int midi_messages, 
+        MarshalMidiMessage* message_data,
+        int* out_message_count);
     void hs_looper_exit(void* state);
 }
 
@@ -31,6 +39,7 @@ HsLooper::~HsLooper() {
     hs_exit();
 }
 
-void HsLooper::process_samples(int window_size, int in_channels, int out_channels, float** channel_data) {
-    hs_looper_main(_state, window_size, in_channels, out_channels, channel_data);
+MarshalMidiMessage* HsLooper::process_samples(int window_size, int in_channels, int out_channels, float** channel_data, 
+                               int midi_messages, MarshalMidiMessage* message_data, int* out_message_count) {
+    hs_looper_main(_state, window_size, in_channels, out_channels, channel_data, midi_messages, message_data, out_message_count);
 }
