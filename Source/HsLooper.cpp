@@ -24,8 +24,13 @@ extern "C" {
     void hs_looper_exit(void* state);
 }
 
+static bool hs_initialized = false;
+
 HsLooper::HsLooper() {
-    hs_init(0, 0);
+    if (!hs_initialized) {
+        hs_init(0, 0);
+        hs_initialized = true;
+    }
     hs_add_root(__stginit_Looper);
     
     _state = hs_looper_init();
@@ -33,7 +38,7 @@ HsLooper::HsLooper() {
 
 HsLooper::~HsLooper() {
     hs_looper_exit(_state);
-    hs_exit();
+    //hs_exit();
 }
 
 void HsLooper::process_samples(uint32 window_size, uint32 in_channels, uint32 out_channels, float** channel_data) {
