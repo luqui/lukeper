@@ -22,6 +22,8 @@ extern "C" {
         uint32 out_channels,
         float** channel_data);
     void hs_looper_exit(void* state);
+
+    void __stginit_APC40mkII();
 }
 
 static bool hs_initialized = false;
@@ -32,6 +34,7 @@ HsLooper::HsLooper() {
         hs_initialized = true;
     }
     hs_add_root(__stginit_Looper);
+    hs_add_root(__stginit_APC40mkII);
     
     _state = hs_looper_init();
 }

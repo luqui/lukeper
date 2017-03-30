@@ -3901,7 +3901,9 @@
                     "-L/Library/Frameworks/GHC.framework/Versions/8.0.1-x86_64/usr/lib/ghc-8.0.1/time-1.6.0.1",
                     "-L/Library/Frameworks/GHC.framework/Versions/8.0.1-x86_64/usr/lib/ghc-8.0.1/deepseq-1.4.2.0",
                     "-L/Library/Frameworks/GHC.framework/Versions/8.0.1-x86_64/usr/lib/ghc-8.0.1/array-0.5.1.1",
+                    "-L/Library/Frameworks/GHC.framework/Versions/8.0.1-x86_64/usr/lib/ghc-8.0.1/transformers-0.5.2.0",
 					build/Debug/Looper.o,
+                    build/Debug/APC40mkII.o,
 					"-bundle",
 					"-llukeper",
 					"-lHSrts",
@@ -3918,6 +3920,7 @@
                     "-lHStime-1.6.0.1",
                     "-lHSdeepseq-1.4.2.0",
                     "-lHSarray-0.5.1.1",
+                    "-lHStransformers-0.5.2.0",
 					"-Wl,-no_compact_unwind",
 				);
 				OTHER_REZFLAGS = "-d ppc_$ppc -d i386_$i386 -d ppc64_$ppc64 -d x86_64_$x86_64 -I /System/Library/Frameworks/CoreServices.framework/Frameworks/CarbonCore.framework/Versions/A/Headers -I \"$(DEVELOPER_DIR)/Extras/CoreAudio/AudioUnits/AUPublic/AUBase\"";
@@ -3982,6 +3985,7 @@
 					"-L/Library/Frameworks/GHC.framework/Versions/8.0.1-x86_64/usr/lib/ghc-8.0.1/ghc-prim-0.5.0.0",
 					"-L/Library/Frameworks/GHC.framework/Versions/8.0.1-x86_64/usr/lib/ghc-8.0.1/rts",
 					build/Debug/Looper.o,
+					build/Debug/APC40mkII.o,
 					"-bundle",
 					"-llukeper",
 					"-lHSrts",

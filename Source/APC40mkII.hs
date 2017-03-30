@@ -196,6 +196,11 @@ type Devs = (MIDI.Connection, MIDI.Connection)
 openDevs :: IO Devs
 openDevs = liftA2 (,) openInDev openOutDev
 
+closeDevs :: Devs -> IO ()
+closeDevs (indev, outdev) = do
+    MIDI.stop indev
+    MIDI.close indev
+    MIDI.close outdev
 
 sendC :: Devs -> Control MIDIIO d e -> d -> IO ()
 sendC (_,outconn) ctrl d = runReaderT (runMIDIIO (sendDiff ctrl d)) outconn

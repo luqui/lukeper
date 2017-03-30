@@ -15,6 +15,8 @@ import Data.Word
 import Foreign.StablePtr
 import Foreign.Storable
 
+import qualified APC40mkII as APC
+
 foreign export ccall hs_looper_init :: IO (StablePtr LooperState)
 foreign export ccall hs_looper_main 
     :: StablePtr LooperState
@@ -26,8 +28,7 @@ foreign export ccall hs_looper_main
 foreign export ccall hs_looper_exit :: StablePtr LooperState -> IO ()
 
 data LooperState = LooperState 
-    { lsMidiSource :: MIDI.Connection
-    , lsMidiDest   :: MIDI.Connection
+    { lsMidiDevs   :: APC.Devs
     , lsLoop       :: Array.IOUArray Int Float
     , lsIndex      :: IORef Int
     }
@@ -39,16 +40,14 @@ findConnection name = fmap head . filterM (\c -> (name ==) <$> MIDI.getName c)
     getConn [] = error $ "No MIDI device with name " ++ show name
 
 hs_looper_init = do
-    source <- flip MIDI.openSource Nothing =<< findConnection "APC40 mkII" =<< MIDI.enumerateSources
-    dest <- MIDI.openDestination =<< findConnection "APC40 mkII" =<< MIDI.enumerateDestinations
+    devs <- APC.openDevs
     array <- Array.newArray (0,44099) 0
     index <- newIORef 0
-    MIDI.start source
-    newStablePtr $ LooperState source dest array index
+    newStablePtr $ LooperState devs array index
 hs_looper_main state window input output channels = do
-    LooperState src dest loop ixref <- deRefStablePtr state
+    LooperState devs loop ixref <- deRefStablePtr state
     time <- floor . realToFrac . Clock.utctDayTime <$> Clock.getCurrentTime
-    MIDI.send dest $ MIDI.MidiMessage 0 (MIDI.NoteOn 32 (fromIntegral (time `mod` 128)))
+    MIDI.send (snd devs) $ MIDI.MidiMessage 0 (MIDI.NoteOn 32 (fromIntegral (time `mod` 128)))
 
     loopix0 <- readIORef ixref
     forM_ [0..fromIntegral window-1] $ \i -> do
@@ -61,8 +60,6 @@ hs_looper_main state window input output channels = do
         pokeElemOff buf i new
     modifyIORef ixref (+ fromIntegral window)
 hs_looper_exit state = do
-    LooperState src dest _ _ <- deRefStablePtr state
-    MIDI.stop src
-    MIDI.close src
-    MIDI.close dest
+    LooperState devs _ _ <- deRefStablePtr state
+    APC.closeDevs devs
     freeStablePtr state
