@@ -75,8 +75,11 @@ class (Monad m) => MonadRefs m where
     writeRef :: Ref m a -> a -> m ()
 
 
-newtype MIDIIO a = MIDIIO { runMIDIIO :: ReaderT MIDI.Connection IO a }
+newtype MIDIIO a = MIDIIO { getMIDIIO :: ReaderT MIDI.Connection IO a }
     deriving (Functor, Applicative, Monad)
+
+runMIDIIO :: MIDIIO a -> MIDI.Connection -> IO a
+runMIDIIO = runReaderT . getMIDIIO
 
 instance MonadMIDI MIDIIO where
     sendMIDI msg = MIDIIO $ do
@@ -203,10 +206,10 @@ closeDevs (indev, outdev) = do
     MIDI.close outdev
 
 sendC :: Devs -> Control MIDIIO d e -> d -> IO ()
-sendC (_,outconn) ctrl d = runReaderT (runMIDIIO (sendDiff ctrl d)) outconn
+sendC (_,outconn) ctrl d = runMIDIIO (sendDiff ctrl d) outconn
 
 recvC :: Devs -> Control MIDIIO d e -> IO [e]
 recvC (inconn,outconn) ctrl = do
     messages <- (fmap.fmap) (\(MIDI.MidiEvent _ m) -> m) $ MIDI.getEvents inconn
-    evseq <- runReaderT (runMIDIIO (fmap mconcat (mapM (getEvents ctrl) messages))) outconn
+    evseq <- runMIDIIO (fmap mconcat (mapM (getEvents ctrl) messages)) outconn
     return $ getSeq evseq (:[])
