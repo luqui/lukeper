@@ -1,4 +1,4 @@
-{-# LANGUAGE ConstraintKinds, KindSignatures, RankNTypes, TypeFamilies #-}
+{-# LANGUAGE ConstraintKinds, KindSignatures, RankNTypes, TupleSections, TypeFamilies #-}
 
 module APC40mkII where
 
@@ -54,6 +54,9 @@ class MonadStates (m :: * -> * -> *) where
     productS :: (Product m p) => m s a -> m s' b -> m (p s s') (a,b)
 
 newtype Seq a = Seq { getSeq :: forall m. Monoid m => (a -> m) -> m }
+
+instance Functor Seq where
+    fmap f s = Seq (\sing -> getSeq s (sing . f))
 
 instance Monoid (Seq a) where
     mempty = Seq (const mempty)
@@ -112,11 +115,49 @@ rgbButton note = Control difftomidi getevents
                         else singleton True
     getevents _ = return mempty
 
+data Coord = Coord !Int !Int
+    deriving (Show)
 
-openDev :: IO MIDI.Connection
-openDev = MIDI.openDestination . head =<< filterM (fmap ("APC40 mkII" ==) . MIDI.getName) =<< MIDI.enumerateDestinations
+mkCoord :: Int -> Int -> Coord
+mkCoord x y 
+    | 1 <= x && x <= 8 && 1 <= y && y <= 5 = Coord x y
+    | otherwise = error $ "coordinate out of range: " ++ show (x,y)
+
+-- Coord indices are 1-based, and count y from the top.
+rgbMatrix :: (Monad m) => Control m (Coord, RGBColorState) (Coord, Bool)
+rgbMatrix = Control difftomidi getevents
+    where
+    difftomidi (c, s) = diffToMIDI (rgbButton (coordToNote c)) s
+    getevents m@(MIDI.MidiMessage _ (MIDI.NoteOn note _))
+        | Just c <- noteToCoord note = (fmap.fmap) (c,) (getEvents (rgbButton note) m)
+    getevents m@(MIDI.MidiMessage _ (MIDI.NoteOff note _))
+        | Just c <- noteToCoord note = (fmap.fmap) (c,) (getEvents (rgbButton note) m)
+    getevents _ = return mempty
+
+    coordToNote (Coord x y) = 8*(4-(y-1))+x-1
+    noteToCoord n
+        | 0 <= n && n < 40 = Just (Coord (n `mod` 8 + 1) (4 - n `div` 8 + 1))
+        | otherwise = Nothing
+
+
+openOutDev :: IO MIDI.Connection
+openOutDev = MIDI.openDestination . head =<< filterM (fmap ("APC40 mkII" ==) . MIDI.getName) =<< MIDI.enumerateDestinations
+
+openInDev :: IO MIDI.Connection
+openInDev = do
+    src <- fmap head . filterM (fmap ("APC40 mkII" ==) . MIDI.getName) =<< MIDI.enumerateSources
+    conn <- MIDI.openSource src Nothing
+    MIDI.start conn
+    return conn
+
 
 sendC :: MIDI.Connection -> Control IO d e -> d -> IO ()
 sendC conn ctrl d = do
     s <- diffToMIDI ctrl d
     appEndo (getSeq s (Endo . (>>) . MIDI.send conn)) (return ())
+
+recvC :: MIDI.Connection -> Control IO d e -> IO [e]
+recvC conn ctrl = do
+    messages <- (fmap.fmap) (\(MIDI.MidiEvent _ m) -> m) $ MIDI.getEvents conn
+    evseq <- fmap mconcat (mapM (getEvents ctrl) messages)
+    return $ getSeq evseq (:[])
