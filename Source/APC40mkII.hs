@@ -62,9 +62,10 @@ instance Monoid (Seq a) where
 singleton :: a -> Seq a
 singleton x = Seq ($ x)
 
-data Control s = Control 
-    { toMIDI         :: s -> Seq MIDI.MidiMessage
-    , updateFromMIDI :: MIDI.MidiMessage -> Maybe (s -> s)  -- Nothing represents id
+-- Control m d e: d is the type of "diffs" to send, e is the type of events to receive. Notice the state is not explicit.
+data Control m d e = Control 
+    { diffToMIDI  :: d -> m (Seq MIDI.MidiMessage)
+    , getEvents   :: MIDI.MidiMessage -> m (Seq e)
     }
 
 -- MIDI implementation from http://pangolin.com/_Files/APC40Mk2_Communications_Protocol_v1.2.pdf
@@ -86,37 +87,36 @@ data RGBColorState
     | RGBPulsing Subdiv RGBColor RGBColor 
     | RGBBlinking Subdiv RGBColor RGBColor
     deriving (Eq, Show)
-data RGBState = RGBState Bool RGBColorState  -- pressed, color
 
-rgbButton :: Int -> Control RGBState
-rgbButton note = Control to from
+rgbButton :: (Monad m) => Int -> Control m RGBColorState Bool
+rgbButton note = Control difftomidi getevents
     where
-    to (RGBState _ s) = toS s
-
-    toS RGBOff = singleton (MIDI.MidiMessage 1 (MIDI.NoteOff note 0))
-    toS (RGBSolid color) = setPrimary color
-    toS (RGBOneShot  subdiv color1 color2) = 
-        setPrimary color1 <> singleton (MIDI.MidiMessage (1+1 +fromEnum subdiv) (MIDI.NoteOn note (rgbColorToVel color2)))
-    toS (RGBPulsing  subdiv color1 color2) = 
-        setPrimary color1 <> singleton (MIDI.MidiMessage (1+6 +fromEnum subdiv) (MIDI.NoteOn note (rgbColorToVel color2)))
-    toS (RGBBlinking subdiv color1 color2) =
-        setPrimary color1 <> singleton (MIDI.MidiMessage (1+11+fromEnum subdiv) (MIDI.NoteOn note (rgbColorToVel color2)))
+    difftomidi RGBOff = return $ singleton (MIDI.MidiMessage 1 (MIDI.NoteOff note 0))
+    difftomidi (RGBSolid color) = return $ setPrimary color
+    difftomidi (RGBOneShot  subdiv color1 color2) = 
+        return $ setPrimary color1 <> singleton (MIDI.MidiMessage (1+1 +fromEnum subdiv) (MIDI.NoteOn note (rgbColorToVel color2)))
+    difftomidi (RGBPulsing  subdiv color1 color2) = 
+        return $ setPrimary color1 <> singleton (MIDI.MidiMessage (1+6 +fromEnum subdiv) (MIDI.NoteOn note (rgbColorToVel color2)))
+    difftomidi (RGBBlinking subdiv color1 color2) =
+        return $ setPrimary color1 <> singleton (MIDI.MidiMessage (1+11+fromEnum subdiv) (MIDI.NoteOn note (rgbColorToVel color2)))
                                                    --     ^
                                                    -- MidiMessage channels are 1-based
 
     setPrimary color = singleton (MIDI.MidiMessage 1 (MIDI.NoteOn note (rgbColorToVel color)))
 
-    from (MIDI.MidiMessage ch (MIDI.NoteOff note' _)) 
-        | note == note' = Just . const $ RGBState False RGBOff
-    from (MIDI.MidiMessage ch (MIDI.NoteOn note' vel))
-        | note == note' = Just . const $
-            if vel == 0 then RGBState False RGBOff
-                        else RGBState True (RGBSolid (velToRGBColor 21)) -- 21 is the green color that is triggered on press
-
+    getevents (MIDI.MidiMessage ch (MIDI.NoteOff note' _)) 
+        | note == note' = return (singleton False)
+    getevents (MIDI.MidiMessage ch (MIDI.NoteOn note' vel))
+        | note == note' = return $
+            if vel == 0 then singleton False
+                        else singleton True
+    getevents _ = return mempty
 
 
 openDev :: IO MIDI.Connection
 openDev = MIDI.openDestination . head =<< filterM (fmap ("APC40 mkII" ==) . MIDI.getName) =<< MIDI.enumerateDestinations
 
-setC :: MIDI.Connection -> Control a -> a -> IO ()
-setC conn ctrl x = appEndo (getSeq (toMIDI ctrl x) (Endo . (>>) . MIDI.send conn)) (return ())
+sendC :: MIDI.Connection -> Control IO d e -> d -> IO ()
+sendC conn ctrl d = do
+    s <- diffToMIDI ctrl d
+    appEndo (getSeq s (Endo . (>>) . MIDI.send conn)) (return ())
