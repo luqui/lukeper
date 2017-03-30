@@ -29,7 +29,7 @@ foreign export ccall hs_looper_exit :: StablePtr LooperState -> IO ()
 
 data LooperState = LooperState 
     { lsMidiDevs   :: APC.Devs
-    , lsLoop       :: Array.IOUArray Int Float
+    , lsLoop       :: Array.IOUArray Int Double
     , lsIndex      :: IORef Int
     }
 
@@ -54,10 +54,10 @@ hs_looper_main state window input output channels = do
         let loopix = (loopix0+i) `mod` 44100
         cur <- Array.readArray loop loopix
         buf <- peekElemOff channels 0
-        inp <- peekElemOff buf i
+        inp <- realToFrac <$> peekElemOff buf i
         let new = cur*0.9 + inp
         Array.writeArray loop loopix new
-        pokeElemOff buf i new
+        pokeElemOff buf i (realToFrac new)
     modifyIORef ixref (+ fromIntegral window)
 hs_looper_exit state = do
     LooperState devs _ _ <- deRefStablePtr state
