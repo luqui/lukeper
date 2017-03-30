@@ -48,8 +48,7 @@ import qualified System.MIDI as MIDI
 import Control.Applicative (liftA2)
 import Control.Monad (filterM)
 import Control.Monad.IO.Class (liftIO)
-import Data.Kind (Constraint)
-import Data.Monoid (Monoid(..), Endo(..), (<>))
+import Data.Monoid (Monoid(..))
 
 import Control.Monad.Trans.Reader
 
@@ -142,11 +141,11 @@ rgbButton note = do
 
     setPrimary color = sendMIDI (MIDI.MidiMessage 1 (MIDI.NoteOn note (rgbColorToVel color)))
 
-    getevents state (MIDI.MidiMessage ch (MIDI.NoteOff note' _)) 
+    getevents state (MIDI.MidiMessage _ (MIDI.NoteOff note' _)) 
         | note == note' = do
             senddiff' =<< readRef state   -- this preserves the color of the button when it is pressed
             return (singleton False)
-    getevents state (MIDI.MidiMessage ch (MIDI.NoteOn note' vel))
+    getevents state (MIDI.MidiMessage _ (MIDI.NoteOn note' vel))
         | note == note' = do
             senddiff' =<< readRef state   -- preserves button color when it's pressed
             return $ if vel == 0 then singleton False
