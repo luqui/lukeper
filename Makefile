@@ -1,4 +1,4 @@
-HSFILES = Source/APC40mkII.hs Source/Loop.hs Source/Looper.hs 
+HSFILES = Source/APC40mkII.hs Source/Loop.hs Source/Sequencer.hs Source/Looper.hs 
 
 all:
 	export MACOSX_DEPLOYMENT_TARGET=10.11

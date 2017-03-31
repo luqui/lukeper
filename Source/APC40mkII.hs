@@ -211,5 +211,5 @@ sendC (_,outconn) ctrl d = runMIDIIO (sendDiff ctrl d) outconn
 recvC :: Devs -> Control MIDIIO d e -> IO [e]
 recvC (inconn,outconn) ctrl = do
     messages <- (fmap.fmap) (\(MIDI.MidiEvent _ m) -> m) $ MIDI.getEvents inconn
-    evseq <- runMIDIIO (fmap mconcat (mapM (getEvents ctrl) messages)) outconn
+    evseq <- runMIDIIO (mconcat <$> mapM (getEvents ctrl) messages) outconn
     return $ getSeq evseq (:[])

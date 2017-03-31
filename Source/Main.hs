@@ -5,6 +5,8 @@ module Main where
 
 import Looper
 import APC40mkII
+import Sequencer
+import Loop
 
 main :: IO ()
 main = return ()

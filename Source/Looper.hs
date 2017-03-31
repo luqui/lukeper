@@ -16,14 +16,8 @@ import Foreign.Storable
 
 import qualified APC40mkII as APC
 import qualified Loop as Loop
+import qualified Sequencer as S
 
-
-
-data LooperState = LooperState 
-    { lsMidiDevs    :: APC.Devs
-    , lsLoop        :: Loop.Loop
-    , lsController  :: APC.Control APC.MIDIIO (APC.Coord, APC.RGBColorState) (APC.Coord, Bool)
-    }
 
 foreign export ccall hs_looper_init :: IO (StablePtr LooperState)
 foreign export ccall hs_looper_main 
@@ -34,6 +28,13 @@ foreign export ccall hs_looper_main
     -> Foreign.Ptr (Foreign.Ptr Float) -- channel data
     -> IO ()
 foreign export ccall hs_looper_exit :: StablePtr LooperState -> IO ()
+
+
+data LooperState = LooperState 
+    { lsMidiDevs    :: APC.Devs
+    , lsLoop        :: Loop.Loop
+    , lsController  :: APC.Control APC.MIDIIO (APC.Coord, APC.RGBColorState) (APC.Coord, Bool)
+    }
 
 hs_looper_init :: IO (StablePtr LooperState)
 hs_looper_init = wrapErrors "hs_looper_init" $ do
