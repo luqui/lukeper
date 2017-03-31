@@ -8,9 +8,9 @@ import qualified Data.Time.Clock as Clock
 import qualified Foreign.Ptr as Foreign
 import qualified System.IO as IO
 
-import Control.Monad (forM_)
-
+import Control.Monad (forM_, replicateM)
 import Control.Monad.IO.Class (liftIO)
+
 import Data.IORef
 import Data.Word
 import Foreign.StablePtr
@@ -33,10 +33,10 @@ foreign export ccall hs_looper_exit :: StablePtr LooperState -> IO ()
 
 type LooperM = S.SequencerT (APC.Coord, Bool) (APC.Coord, APC.RGBColorState) APC.MIDIIO
 
-startLooper :: Loop.Loop -> LooperM ()
-startLooper loop = launchButton (APC.Coord (1,1))
+startLooper :: [Loop.Loop] -> LooperM ()
+startLooper loops = sequence_ [ launchButton loop (APC.Coord (i,1)) | (i, loop) <- zip [1..] loops ]
     where
-    launchButton coord = 
+    launchButton loop coord = 
         S.when (\e -> e == (coord, True)) $ do
             S.send (coord, APC.RGBPulsing APC.Subdiv4 (APC.velToRGBColor 24) (APC.velToRGBColor 36))
             liftIO $ Loop.setLoopState loop Loop.Appending
@@ -46,24 +46,24 @@ startLooper loop = launchButton (APC.Coord (1,1))
                 S.when (\e -> e == (coord, True)) $ do
                     S.send (coord, APC.RGBOff)
                     liftIO $ Loop.setLoopState loop Loop.Disabled
-                    launchButton coord
+                    launchButton loop coord
 
 data LooperState = LooperState 
     { lsMidiDevs    :: APC.Devs
-    , lsLoop        :: Loop.Loop
+    , lsLoops       :: [Loop.Loop]
     , lsSeqState    :: IORef (S.SeqState LooperM (APC.Coord, Bool) (APC.Coord, APC.RGBColorState))
     }
 
 hs_looper_init :: IO (StablePtr LooperState)
 hs_looper_init = wrapErrors "hs_looper_init" $ do
     devs <- APC.openDevs
-    loop <- Loop.newLoop
+    loops <- replicateM 8 Loop.newLoop
     controller <- APC.runMIDIIO APC.rgbMatrix (snd devs)
     (_, seqstate) <- APC.runMIDIIO 
-        (S.runSequencerT (startLooper loop) (S.newSeqState devs controller)) (snd devs)
+        (S.runSequencerT (startLooper loops) (S.newSeqState devs controller)) (snd devs)
     seqstateref <- newIORef seqstate
     newStablePtr $ LooperState { lsMidiDevs = devs
-                               , lsLoop = loop
+                               , lsLoops = loops
                                , lsSeqState = seqstateref
                                }
 
@@ -84,7 +84,7 @@ hsLooperMain looperstate window _inchannels _outchannels channels = do
                     =<< mapM (fmap realToFrac . peekElemOff inbuf) [0..window-1]
     outbufarray <- Array.newArray (0,window-1) 0
 
-    Loop.runLoop (lsLoop looperstate) inbufarray outbufarray
+    mapM_ (\loop -> Loop.runLoop loop inbufarray outbufarray) (lsLoops looperstate)
 
     outbufL <- peekElemOff channels 0
     outbufR <- peekElemOff channels 1
