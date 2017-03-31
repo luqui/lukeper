@@ -3909,7 +3909,7 @@
                     build/Debug/Sequencer.o,
 					"-bundle",
 					"-llukeper",
-					"-lHSrts",
+					"-lHSrts_thr",
 					"-lHSghc-prim-0.5.0.0",
 					"-lHSinteger-gmp-1.0.0.1",
 					"-lHSbase-4.9.0.0",
