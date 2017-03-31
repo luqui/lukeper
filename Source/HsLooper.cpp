@@ -29,9 +29,9 @@ static bool hs_initialized = false;
 HsLooper::HsLooper() {
     if (!hs_initialized) {
         hs_init(0, 0);
+        hs_add_root(__stginit_Looper);
         hs_initialized = true;
     }
-    hs_add_root(__stginit_Looper);
     
     _state = hs_looper_init();
 }
