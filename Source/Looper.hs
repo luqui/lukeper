@@ -10,6 +10,8 @@ import qualified System.IO as IO
 
 import Control.Monad (forM_)
 
+import Control.Monad.IO.Class (liftIO)
+import Data.IORef
 import Data.Word
 import Foreign.StablePtr
 import Foreign.Storable
@@ -29,11 +31,27 @@ foreign export ccall hs_looper_main
     -> IO ()
 foreign export ccall hs_looper_exit :: StablePtr LooperState -> IO ()
 
+type LooperM = S.SequencerT (APC.Coord, Bool) (APC.Coord, APC.RGBColorState) APC.MIDIIO
+
+startLooper :: Loop.Loop -> LooperM ()
+startLooper loop = launchButton (APC.Coord (1,1))
+    where
+    launchButton coord = 
+        S.when (\e -> e == (coord, True)) $ do
+            S.send (coord, APC.RGBPulsing APC.Subdiv4 (APC.velToRGBColor 24) (APC.velToRGBColor 36))
+            liftIO $ Loop.setLoopState loop Loop.Appending
+            S.when (\e -> e == (coord, True)) $ do
+                S.send (coord, APC.RGBSolid (APC.velToRGBColor 16))
+                liftIO $ Loop.setLoopState loop Loop.Playing
+                S.when (\e -> e == (coord, True)) $ do
+                    S.send (coord, APC.RGBOff)
+                    liftIO $ Loop.setLoopState loop Loop.Disabled
+                    launchButton coord
 
 data LooperState = LooperState 
     { lsMidiDevs    :: APC.Devs
     , lsLoop        :: Loop.Loop
-    , lsController  :: APC.Control APC.MIDIIO (APC.Coord, APC.RGBColorState) (APC.Coord, Bool)
+    , lsSeqState    :: IORef (S.SeqState LooperM (APC.Coord, Bool) (APC.Coord, APC.RGBColorState))
     }
 
 hs_looper_init :: IO (StablePtr LooperState)
@@ -41,9 +59,12 @@ hs_looper_init = wrapErrors "hs_looper_init" $ do
     devs <- APC.openDevs
     loop <- Loop.newLoop
     controller <- APC.runMIDIIO APC.rgbMatrix (snd devs)
+    (_, seqstate) <- APC.runMIDIIO 
+        (S.runSequencerT (startLooper loop) (S.newSeqState devs controller)) (snd devs)
+    seqstateref <- newIORef seqstate
     newStablePtr $ LooperState { lsMidiDevs = devs
                                , lsLoop = loop
-                               , lsController = controller
+                               , lsSeqState = seqstateref
                                }
 
 hs_looper_main :: StablePtr LooperState -> Word32 -> Word32 -> Word32 -> Foreign.Ptr (Foreign.Ptr Float) -> IO ()
@@ -53,19 +74,10 @@ hs_looper_main state window input output channels = wrapErrors "hs_looper_main" 
 
 hsLooperMain :: LooperState -> Int -> Int -> Int -> Foreign.Ptr (Foreign.Ptr Float) -> IO ()
 hsLooperMain looperstate window _inchannels _outchannels channels = do
-    events <- APC.recvC (lsMidiDevs looperstate) (lsController looperstate)
-
-    Loop.modifyLoopState (lsLoop looperstate) $ \state ->
-         foldr (\e s -> 
-                 if e == (APC.Coord (1,1), True)
-                   then case s of
-                          Loop.Disabled  -> Loop.Appending
-                          Loop.Appending -> Loop.Playing
-                          Loop.Playing   -> Loop.Playing
-                   else s
-                ) state events
-
-
+    seqstate <- readIORef (lsSeqState looperstate)
+    (_, seqstate') <- APC.runMIDIIO (S.runSequencerT S.tick seqstate) (snd (lsMidiDevs looperstate))
+    writeIORef (lsSeqState looperstate) seqstate'
+    
     inbuf <- peekElemOff channels 0
     -- TODO, don't allocate every time
     inbufarray <- Array.newListArray (0,window-1) 

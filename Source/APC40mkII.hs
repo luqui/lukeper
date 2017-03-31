@@ -47,7 +47,7 @@ import qualified System.MIDI.Base as MIDI
 import qualified System.MIDI as MIDI
 import Control.Applicative (liftA2)
 import Control.Monad (filterM)
-import Control.Monad.IO.Class (liftIO)
+import Control.Monad.IO.Class (MonadIO, liftIO)
 import Data.Monoid (Monoid(..))
 
 import Control.Monad.Trans.Reader
@@ -76,7 +76,7 @@ class (Monad m) => MonadRefs m where
 
 
 newtype MIDIIO a = MIDIIO { getMIDIIO :: ReaderT MIDI.Connection IO a }
-    deriving (Functor, Applicative, Monad)
+    deriving (Functor, Applicative, Monad, MonadIO)
 
 runMIDIIO :: MIDIIO a -> MIDI.Connection -> IO a
 runMIDIIO = runReaderT . getMIDIIO
@@ -122,7 +122,8 @@ data RGBColorState
     | RGBBlinking Subdiv RGBColor RGBColor
     deriving (Eq, Show)
 
-rgbButton :: (MonadMIDI m, MonadRefs m) => Int -> m (Control m RGBColorState Bool)
+rgbButton :: (MonadMIDI m, MonadRefs m, MonadRefs m', Ref m ~ Ref m') 
+          => Int -> m' (Control m RGBColorState Bool)
 rgbButton note = do
     state <- newRef RGBOff
     return $ Control (senddiff state) (getevents state)
@@ -167,7 +168,8 @@ mkCoord x y
     | otherwise = error $ "coordinate out of range: " ++ show (x,y)
 
 -- Coord indices are 1-based, and count y from the top.
-rgbMatrix :: (MonadMIDI m, MonadRefs m) => m (Control m (Coord, RGBColorState) (Coord, Bool))
+rgbMatrix :: (MonadMIDI m, MonadRefs m, MonadRefs m', Ref m ~ Ref m') 
+          => m' (Control m (Coord, RGBColorState) (Coord, Bool))
 rgbMatrix = do
     buttons <- Array.array (Coord (1,1), Coord (8,5)) <$> 
                  mapM (\c -> (c,) <$> rgbButton (coordToNote c)) [ Coord (i,j) | i <- [1..8], j <- [1..5] ]

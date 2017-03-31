@@ -1,4 +1,4 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving, LambdaCase, ViewPatterns #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving, LambdaCase, TypeFamilies, ViewPatterns #-}
 
 module Sequencer where
 
@@ -29,10 +29,19 @@ data SeqState m i o = SeqState
 
 newtype SequencerT i o m a 
     = SequencerT { getSequencerT :: StateT (SeqState (SequencerT i o m) i o) m a }
-    deriving (Functor, Applicative, Monad)
+    deriving (Functor, Applicative, Monad, MonadIO)
 
 instance MonadTrans (SequencerT i o) where
     lift = SequencerT . lift
+
+instance APC.MonadMIDI m => APC.MonadMIDI (SequencerT i o m) where
+    sendMIDI = lift . APC.sendMIDI
+
+instance APC.MonadRefs m => APC.MonadRefs (SequencerT i o m) where
+    type Ref (SequencerT i o m) = APC.Ref m
+    newRef = lift . APC.newRef
+    readRef = lift . APC.readRef
+    writeRef r = lift . APC.writeRef r
 
 newSeqState :: APC.Devs -> APC.Control m o i -> SeqState m i o
 newSeqState devs ctrl = SeqState 
@@ -73,12 +82,18 @@ runSequencerT :: SequencerT i o m a
               -> m (a, SeqState (SequencerT i o m) i o)
 runSequencerT = runStateT . getSequencerT
 
-when :: (Monad m) => (i -> SequencerT i o m Bool) -> SequencerT i o m () -> SequencerT i o m ()
-when cond action = SequencerT $
+when :: (Monad m) => (i -> Bool) -> SequencerT i o m () -> SequencerT i o m ()
+when cond = whenM (return . cond)
+
+whenM :: (Monad m) => (i -> SequencerT i o m Bool) -> SequencerT i o m () -> SequencerT i o m ()
+whenM cond action = SequencerT $
     modify $ \s -> s { seqCondEvents = seqCondEvents s Seq.|> (cond, action) }
 
-whenever :: (Monad m) => (i -> SequencerT i o m Bool) -> SequencerT i o m () -> SequencerT i o m ()
-whenever cond action = when cond (action >> whenever cond action)
+whenever :: (Monad m) => (i -> Bool) -> SequencerT i o m () -> SequencerT i o m ()
+whenever cond = wheneverM (return . cond)
+
+wheneverM :: (Monad m) => (i -> SequencerT i o m Bool) -> SequencerT i o m () -> SequencerT i o m ()
+wheneverM cond action = whenM cond (action >> wheneverM cond action)
 
 at :: (Monad m) => Time -> SequencerT i o m () -> SequencerT i o m ()
 at time action = SequencerT $
@@ -87,6 +102,10 @@ at time action = SequencerT $
 now :: (Monad m) => SequencerT i o m Word32
 now = SequencerT $ gets seqCurrentTime
 
+send :: (APC.MonadMIDI m) => o -> SequencerT i o m ()
+send o = SequencerT $ do
+    ctrl <- gets seqController
+    getSequencerT (APC.sendDiff ctrl o)
 
 iterWhileM :: (Monad m) => m (Maybe a) -> (a -> m ()) -> m ()
 iterWhileM cond action = do
