@@ -1,11 +1,13 @@
-{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE RecordWildCards, ScopedTypeVariables #-}
 
 module Looper where
 
+import qualified Control.Exception as Exc
 import qualified Data.Array.IO as Array
 import qualified Data.Time.Clock as Clock
 import qualified Foreign.Ptr as Foreign
 import qualified Foreign.Marshal.Array as Foreign
+import qualified System.IO as IO
 import qualified System.MIDI as MIDI
 
 import Control.Monad (filterM, (<=<), forM_)
@@ -71,8 +73,15 @@ data LooperState = LooperState
     , lsController  :: APC.Control APC.MIDIIO (APC.Coord, APC.RGBColorState) (APC.Coord, Bool)
     }
 
+wrapErrors :: String -> IO a -> IO a
+wrapErrors entry action = Exc.catch action $ \(e :: Exc.SomeException) -> do
+    time <- Clock.getCurrentTime
+    IO.withFile "/tmp/looperlog" IO.AppendMode $ \fh -> do
+        IO.hPutStrLn fh $ show time ++ " : " ++ entry ++ " : " ++ show e
+    Exc.throwIO e
+
 foreign export ccall hs_looper_init :: IO (StablePtr LooperState)
-hs_looper_init = do
+hs_looper_init = wrapErrors "hs_looper_init" $ do
     devs <- APC.openDevs
     loopbuf <- newLoopBuffer
     recordstate <- newIORef NotYet
@@ -90,7 +99,7 @@ foreign export ccall hs_looper_main
     -> Word32                          -- output channels
     -> Foreign.Ptr (Foreign.Ptr Float) -- channel data
     -> IO ()
-hs_looper_main state window input output channels = do
+hs_looper_main state window input output channels = wrapErrors "hs_looper_main" $ do
     looperstate <- deRefStablePtr state
     hsLooperMain looperstate (fromIntegral window) (fromIntegral input) (fromIntegral output) channels
 
@@ -127,7 +136,7 @@ hsLooperMain looperstate window inchannels outchannels channels = do
         pokeElemOff outbufR i sample
 
 foreign export ccall hs_looper_exit :: StablePtr LooperState -> IO ()
-hs_looper_exit state = do
+hs_looper_exit state = wrapErrors "hs_looper_exit" $ do
     looperstate <- deRefStablePtr state
     APC.closeDevs (lsMidiDevs looperstate)
     freeStablePtr state
