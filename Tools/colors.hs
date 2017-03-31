@@ -8,3 +8,7 @@ openOutDev = openDestination . head =<< filterM (fmap ("APC40 mkII" ==) . getNam
 setColor :: Connection -> Int -> Int -> IO ()
 setColor dev note color = do
     send dev (MidiMessage 1 (NoteOn note color))
+
+colorArray :: Connection -> Int -> IO ()
+colorArray dev startColor = do
+    forM_ [0..39] $ \i -> setColor dev i (startColor+i)

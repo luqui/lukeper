@@ -36,17 +36,20 @@ type LooperM = S.SequencerT (APC.Coord, Bool) (APC.Coord, APC.RGBColorState) APC
 startLooper :: [Loop.Loop] -> LooperM ()
 startLooper loops = sequence_ [ launchButton loop (APC.Coord (i,1)) | (i, loop) <- zip [1..] loops ]
     where
-    launchButton loop coord = 
+    launchButton :: Loop.Loop -> APC.Coord -> LooperM ()
+    launchButton loop coord = S.when (\e -> e == (coord, True)) $ do
+        S.send (coord, APC.RGBPulsing APC.Subdiv4 (APC.velToRGBColor 6) (APC.velToRGBColor 7))
+        liftIO $ Loop.setLoopState loop Loop.Appending
+        playStop loop coord
+
+    playStop :: Loop.Loop -> APC.Coord -> LooperM ()
+    playStop loop coord = S.when (\e -> e == (coord, True)) $ do
+        S.send (coord, APC.RGBPulsing APC.Subdiv4 (APC.velToRGBColor 22) (APC.velToRGBColor 23)) 
+        liftIO $ Loop.setLoopState loop Loop.Playing
         S.when (\e -> e == (coord, True)) $ do
-            S.send (coord, APC.RGBPulsing APC.Subdiv4 (APC.velToRGBColor 24) (APC.velToRGBColor 36))
-            liftIO $ Loop.setLoopState loop Loop.Appending
-            S.when (\e -> e == (coord, True)) $ do
-                S.send (coord, APC.RGBSolid (APC.velToRGBColor 16))
-                liftIO $ Loop.setLoopState loop Loop.Playing
-                S.when (\e -> e == (coord, True)) $ do
-                    S.send (coord, APC.RGBOff)
-                    liftIO $ Loop.setLoopState loop Loop.Disabled
-                    launchButton loop coord
+            S.send (coord, APC.RGBSolid (APC.velToRGBColor 14))
+            liftIO $ Loop.setLoopState loop Loop.Disabled
+            playStop loop coord
 
 data LooperState = LooperState 
     { lsMidiDevs    :: APC.Devs
