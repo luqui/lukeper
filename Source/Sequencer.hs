@@ -40,6 +40,14 @@ instance MonadRefs m => MonadRefs (SequencerT i o m) where
     readRef = lift . readRef
     writeRef r = lift . writeRef r
 
+instance Monad m => MonadSched (SequencerT i o m) where
+    now = SequencerT $ gets seqCurrentTime
+    at time action = SequencerT $
+        modify $ \s -> s { seqTimedEvents = Map.insertWith (>>) time action (seqTimedEvents s) }
+
+
+    
+
 runSequencerT :: SequencerT i o m a 
               -> SeqState (SequencerT i o m) i o 
               -> m (a, SeqState (SequencerT i o m) i o)
@@ -108,13 +116,6 @@ whenever cond = wheneverM (return . cond)
 
 wheneverM :: (Monad m) => (i -> SequencerT i o m Bool) -> SequencerT i o m () -> SequencerT i o m ()
 wheneverM cond action = whenM cond (action >> wheneverM cond action)
-
-at :: (Monad m) => Time -> SequencerT i o m () -> SequencerT i o m ()
-at time action = SequencerT $
-    modify $ \s -> s { seqTimedEvents = Map.insertWith (>>) time action (seqTimedEvents s) }
-
-now :: (Monad m) => SequencerT i o m Word32
-now = SequencerT $ gets seqCurrentTime
 
 send :: (Monad m) => o -> SequencerT i o m ()
 send o = SequencerT $ do
