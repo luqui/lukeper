@@ -12,3 +12,8 @@ setColor dev note color = do
 colorArray :: Connection -> Int -> IO ()
 colorArray dev startColor = do
     forM_ [0..39] $ \i -> setColor dev i (startColor+i)
+
+-- mode is 0, 1, or 2
+setMode :: Connection -> Int -> IO ()
+setMode dev mode = do
+    sendSysEx dev [0x47, 0x7f, 0x29, 0x60, 0x00, 0x04, 0x40 + fromIntegral mode, 0x00 {- version high -}, 0x00 {-version low -}, 0x00 {-bugfix level-} ]
