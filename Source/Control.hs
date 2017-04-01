@@ -8,9 +8,7 @@ import qualified Data.IORef as IORef
 import qualified System.MIDI as MIDI
 
 import Control.Applicative (liftA2)
-import Control.Monad (ap, filterM)
-import Control.Monad.IO.Class (MonadIO, liftIO)
-import Control.Monad.Trans.Reader (ReaderT, runReaderT, ask)
+import Control.Monad (filterM)
 import Data.Word (Word32)
 
 import Control.Category

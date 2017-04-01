@@ -3907,6 +3907,7 @@
                     build/Debug/APC40mkII.o,
                     build/Debug/Loop.o,
                     build/Debug/Sequencer.o,
+                    build/Debug/Control.o,
 					"-bundle",
 					"-llukeper",
 					"-lHSrts_thr",

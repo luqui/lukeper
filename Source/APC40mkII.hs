@@ -44,18 +44,8 @@ module APC40mkII where
 import Prelude hiding ((.), id)
 import Control.Category
 
-import qualified Control.Arrow as Arrow
 import qualified Data.Array as Array
-import qualified Data.IORef as IORef
 import qualified System.MIDI.Base as MIDI
-import qualified System.MIDI as MIDI
-
-import Control.Applicative (liftA2)
-import Control.Monad (filterM)
-import Control.Monad.IO.Class (MonadIO, liftIO)
-import Data.Monoid (Monoid(..))
-
-import Control.Monad.Trans.Reader
 
 import Control
 
@@ -95,6 +85,7 @@ rgbButton note = Control $ \out -> do
         writeRef stateref s
         senddiff' sendmidi s
 
+    senddiff' :: (Monad m) => (MIDI.MidiMessage -> m ()) -> RGBColorState -> m ()
     senddiff' sendmidi RGBOff = sendmidi $ MIDI.MidiMessage 1 (MIDI.NoteOff note 0)
     senddiff' sendmidi (RGBSolid color) = sendmidi $ setPrimary color
     senddiff' sendmidi (RGBOneShot  subdiv color1 color2) = do

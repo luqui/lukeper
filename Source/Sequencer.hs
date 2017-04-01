@@ -6,7 +6,6 @@ import qualified Data.Map as Map
 import qualified Data.Sequence as Seq
 import qualified System.MIDI as MIDI
 
-import Control.Monad (forM_)
 import Control.Monad.IO.Class (MonadIO(..))
 import Control.Monad.Trans.Class (MonadTrans, lift)
 import Data.Foldable (toList)
@@ -70,7 +69,7 @@ bootSequencerT devs ctrl = do
     (sendO,state1) <- flip runSequencerT state0 . instControl ctrl $ \case
         Left midiEvent -> liftIO (MIDI.send (snd devs) midiEvent)
         Right i -> processEvent i
-    return state1
+    return $ state1 { seqController = sendO }
 
 -- run conditional events  (ignoring their incoming timestamps (questionable))
 processEvent :: (Monad m) => i -> SequencerT i o m ()
