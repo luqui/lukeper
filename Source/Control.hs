@@ -18,6 +18,7 @@ import Control.Category
 
 newtype Control m i o = Control { instControl :: (o -> m ()) -> m (i -> m ()) }
 
+
 -- Bizarrely, composition needs Monad, but none of the Arrow combis do (except composition I guess).
 instance (Monad m) => Category (Control m) where
     id = Control $ return

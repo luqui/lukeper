@@ -1,4 +1,4 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving, LambdaCase, TypeFamilies, ViewPatterns #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving, LambdaCase, TypeFamilies, ViewPatterns, RecursiveDo #-}
 
 module Sequencer where
 
@@ -15,13 +15,13 @@ import Data.Monoid ((<>))
 import Control.Monad.Trans.State
 import Data.Word
 
-import qualified APC40mkII as APC -- just for stubby midi functions
+import Control
 
 type Time = Word32
 
 data SeqState m i o = SeqState
-    { seqMidiDevs    :: APC.Devs
-    , seqController  :: APC.Control m o i
+    { seqMidiDevs    :: Devs
+    , seqController  :: Either MIDI.MidiMessage o -> m ()
     , seqTimedEvents :: Map.Map Time (m ())
     , seqCondEvents  :: Seq.Seq (i -> m Bool, m ())
     , seqCurrentTime :: Word32
@@ -34,23 +34,48 @@ newtype SequencerT i o m a
 instance MonadTrans (SequencerT i o) where
     lift = SequencerT . lift
 
-instance APC.MonadMIDI m => APC.MonadMIDI (SequencerT i o m) where
-    sendMIDI = lift . APC.sendMIDI
+instance MonadRefs m => MonadRefs (SequencerT i o m) where
+    type Ref (SequencerT i o m) = Ref m
+    newRef = lift . newRef
+    readRef = lift . readRef
+    writeRef r = lift . writeRef r
 
-instance APC.MonadRefs m => APC.MonadRefs (SequencerT i o m) where
-    type Ref (SequencerT i o m) = APC.Ref m
-    newRef = lift . APC.newRef
-    readRef = lift . APC.readRef
-    writeRef r = lift . APC.writeRef r
+runSequencerT :: SequencerT i o m a 
+              -> SeqState (SequencerT i o m) i o 
+              -> m (a, SeqState (SequencerT i o m) i o)
+runSequencerT = runStateT . getSequencerT
 
-newSeqState :: APC.Devs -> APC.Control m o i -> SeqState m i o
-newSeqState devs ctrl = SeqState 
-    { seqMidiDevs = devs
-    , seqController = ctrl
-    , seqTimedEvents = Map.empty
-    , seqCondEvents = Seq.empty
-    , seqCurrentTime = 0  -- will be set by runSequencerT
-    }
+bootSequencerT :: (MonadIO m) 
+               => Devs -> MIDIControl (SequencerT i o m) o i 
+               -> m (SeqState (SequencerT i o m) i o)
+bootSequencerT devs ctrl = do
+    time0 <- liftIO (MIDI.currentTime (fst devs))
+    let state0 = SeqState 
+            { seqMidiDevs = devs
+            -- When we boot, we haven't set up any event handlers yet, so we just ignore
+            -- "o" events.
+            , seqController = either (liftIO . MIDI.send (snd devs)) (const (return ()))
+            , seqTimedEvents = Map.empty
+            , seqCondEvents = Seq.empty
+            , seqCurrentTime = time0
+            }
+    (sendO,state1) <- flip runSequencerT state0 . instControl ctrl $ \case
+        Left midiEvent -> liftIO (MIDI.send (snd devs) midiEvent)
+        Right i -> processEvent i
+    return state1
+
+-- run conditional events  (ignoring their incoming timestamps (questionable))
+processEvent :: (Monad m) => i -> SequencerT i o m ()
+processEvent i = SequencerT procFirst
+    where
+    procFirst = do
+      condEvents <- gets seqCondEvents
+      findIndexLM (\(p, _) -> getSequencerT (p i)) condEvents >>= \case
+        Just ix | (pre, Seq.viewl -> (_, action) Seq.:< post) <- Seq.splitAt ix condEvents -> do
+            modify (\s -> s { seqCondEvents = pre <> post })
+            getSequencerT action
+            procFirst
+        _ -> return ()
 
 tick :: (MonadIO m) => SequencerT i o m ()
 tick = SequencerT $ do
@@ -63,24 +88,13 @@ tick = SequencerT $ do
             getSequencerT action
     modify $ \s -> s { seqCurrentTime = time }
 
-    -- run conditional events  (ignoring their incoming timestamps (also questionable))
+    -- process incoming MIDI events
     messages <- liftIO . (fmap.fmap) (\(MIDI.MidiEvent _ m) -> m) . MIDI.getEvents . fst 
                     =<< gets seqMidiDevs
     ctrl <- gets seqController
-    eventseq <- getSequencerT $ mconcat <$> mapM (APC.getEvents ctrl) messages
+    getSequencerT $ mapM_ (ctrl . Left) messages
 
-    forM_ (APC.getSeq eventseq (:[])) $ \e -> do
-        condEvents <- gets seqCondEvents
-        findIndexLM (\(p, _) -> getSequencerT (p e)) condEvents >>= \case
-            Just ix | (pre, Seq.viewl -> (_, action) Seq.:< post) <- Seq.splitAt ix condEvents -> do
-                modify (\s -> s { seqCondEvents = pre <> post })
-                getSequencerT action
-            _ -> return ()
 
-runSequencerT :: SequencerT i o m a 
-              -> SeqState (SequencerT i o m) i o 
-              -> m (a, SeqState (SequencerT i o m) i o)
-runSequencerT = runStateT . getSequencerT
 
 when :: (Monad m) => (i -> Bool) -> SequencerT i o m () -> SequencerT i o m ()
 when cond = whenM (return . cond)
@@ -102,10 +116,10 @@ at time action = SequencerT $
 now :: (Monad m) => SequencerT i o m Word32
 now = SequencerT $ gets seqCurrentTime
 
-send :: (APC.MonadMIDI m) => o -> SequencerT i o m ()
+send :: (Monad m) => o -> SequencerT i o m ()
 send o = SequencerT $ do
     ctrl <- gets seqController
-    getSequencerT (APC.sendDiff ctrl o)
+    getSequencerT (ctrl (Right o))
 
 iterWhileM :: (Monad m) => m (Maybe a) -> (a -> m ()) -> m ()
 iterWhileM cond action = do
