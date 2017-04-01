@@ -7,7 +7,8 @@ import Prelude hiding (id, (.))
 import qualified Data.IORef as IORef
 import qualified System.MIDI as MIDI
 
-import Control.Monad (ap)
+import Control.Applicative (liftA2)
+import Control.Monad (ap, filterM)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Trans.Reader (ReaderT, runReaderT, ask)
 import Data.Word (Word32)
@@ -49,6 +50,8 @@ io ||| i'o = fmap untag (io +++ i'o)
     untag (Right x) = x
 
 
+
+
 class (Monad m) => MonadRefs m where
     type Ref m :: * -> *
     newRef :: a -> m (Ref m a)
@@ -57,7 +60,13 @@ class (Monad m) => MonadRefs m where
 
 class (Monad m) => MonadSched m where
     now :: m Word32
-    after :: Word32 -> m () -> m ()
+    -- millisecs
+    at :: Word32 -> m () -> m ()
+
+after :: (MonadSched m) => Word32 -> m () -> m ()
+after dt action = do
+    t <- now
+    at (t + dt) action
 
 instance MonadRefs IO where
     type Ref IO = IORef.IORef
@@ -67,7 +76,6 @@ instance MonadRefs IO where
 
 
 type MIDIControl m i o = Control m (Either MIDI.MidiMessage i) (Either MIDI.MidiMessage o)
-
 
 data LongPress = PressDown | PressUp | PressLong
     deriving (Eq, Show)
@@ -89,14 +97,34 @@ countOutputs c = Control $ \out -> do
         writeRef countref $! count+1
         out (count,o)
 
-longPress :: (MonadRefs m, MonadSched m) => Word32 -> Control m i Bool -> Control m i LongPress
-longPress delay c = Control $ \out -> do
+longPress :: (MonadRefs m, MonadSched m) => Word32 -> Control m Bool LongPress
+longPress delay = countInputs . Control $ \out -> do
     downcountref <- newRef 0
-    instControl (countOutputs c) $ \(count,o) -> 
-        if o then do writeRef downcountref count
+    return $ \(count, i) -> do
+        if i then do writeRef downcountref count
                      after delay $ do
                          downcount <- readRef downcountref
                          if count == downcount then out PressLong else return ()
                      out PressDown
              else out PressUp
 
+
+openOutDev :: IO MIDI.Connection
+openOutDev = MIDI.openDestination . head =<< filterM (fmap ("APC40 mkII" ==) . MIDI.getName) =<< MIDI.enumerateDestinations
+
+openInDev :: IO MIDI.Connection
+openInDev = do
+    src <- fmap head . filterM (fmap ("APC40 mkII" ==) . MIDI.getName) =<< MIDI.enumerateSources
+    conn <- MIDI.openSource src Nothing
+    MIDI.start conn
+    return conn
+
+type Devs = (MIDI.Connection, MIDI.Connection)
+openDevs :: IO Devs
+openDevs = liftA2 (,) openInDev openOutDev
+
+closeDevs :: Devs -> IO ()
+closeDevs (indev, outdev) = do
+    MIDI.stop indev
+    MIDI.close indev
+    MIDI.close outdev

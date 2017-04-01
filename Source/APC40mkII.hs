@@ -1,4 +1,4 @@
-{-# LANGUAGE ConstraintKinds, GeneralizedNewtypeDeriving, KindSignatures, RankNTypes, TupleSections, TypeFamilies #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving, LambdaCase, TupleSections #-}
 
 module APC40mkII where
 
@@ -41,10 +41,15 @@ module APC40mkII where
 -- abstraction are built just with more complex getters and setters?  Ok,
 -- let's see.
 
+import Prelude hiding ((.), id)
+import Control.Category
+
+import qualified Control.Arrow as Arrow
 import qualified Data.Array as Array
 import qualified Data.IORef as IORef
 import qualified System.MIDI.Base as MIDI
 import qualified System.MIDI as MIDI
+
 import Control.Applicative (liftA2)
 import Control.Monad (filterM)
 import Control.Monad.IO.Class (MonadIO, liftIO)
@@ -52,52 +57,7 @@ import Data.Monoid (Monoid(..))
 
 import Control.Monad.Trans.Reader
 
-newtype Seq a = Seq { getSeq :: forall m. Monoid m => (a -> m) -> m }
-
-instance Functor Seq where
-    fmap f s = Seq (\sing -> getSeq s (sing . f))
-
-instance Monoid (Seq a) where
-    mempty = Seq (const mempty)
-    mappend a b = Seq $ getSeq a `mappend` getSeq b
-
-singleton :: a -> Seq a
-singleton x = Seq ($ x)
-
-
-class (Monad m) => MonadMIDI m where
-    sendMIDI :: MIDI.MidiMessage -> m ()
-
-class (Monad m) => MonadRefs m where
-    type Ref m :: * -> *
-    newRef :: a -> m (Ref m a)
-    readRef :: Ref m a -> m a
-    writeRef :: Ref m a -> a -> m ()
-
-
-newtype MIDIIO a = MIDIIO { getMIDIIO :: ReaderT MIDI.Connection IO a }
-    deriving (Functor, Applicative, Monad, MonadIO)
-
-runMIDIIO :: MIDIIO a -> MIDI.Connection -> IO a
-runMIDIIO = runReaderT . getMIDIIO
-
-instance MonadMIDI MIDIIO where
-    sendMIDI msg = MIDIIO $ do
-        conn <- ask
-        liftIO $ MIDI.send conn msg
-
-instance MonadRefs MIDIIO where
-    type Ref MIDIIO = IORef.IORef
-    newRef = MIDIIO . liftIO . IORef.newIORef
-    readRef = MIDIIO . liftIO . IORef.readIORef
-    writeRef r x = MIDIIO $ liftIO (IORef.writeIORef r x)
-
-
--- Control m d e: d is the type of "diffs" to send, e is the type of events to receive. Notice the state is not explicit.
-data Control m d e = Control 
-    { sendDiff   :: d -> m ()
-    , getEvents  :: MIDI.MidiMessage -> m (Seq e)
-    }
+import Control
 
 
 -- MIDI implementation from http://pangolin.com/_Files/APC40Mk2_Communications_Protocol_v1.2.pdf
@@ -122,40 +82,49 @@ data RGBColorState
     | RGBBlinking Subdiv RGBColor RGBColor
     deriving (Eq, Show)
 
-rgbButton :: (MonadMIDI m, MonadRefs m, MonadRefs m', Ref m ~ Ref m') 
-          => Int -> m' (Control m RGBColorState Bool)
-rgbButton note = do
-    state <- newRef RGBOff
-    return $ Control (senddiff state) (getevents state)
+rgbButton :: (MonadRefs m) => Int -> MIDIControl m RGBColorState Bool
+rgbButton note = Control $ \out -> do
+    stateref <- newRef RGBOff
+    let sendmidi = out . Left
+    let sendevent = out . Right
+    return $ \case
+        Left midimessage -> getevents sendevent sendmidi stateref midimessage
+        Right colorstate -> senddiff sendmidi stateref colorstate
     where
-    senddiff state s = do
-        writeRef state s
-        senddiff' s
+    senddiff sendmidi stateref s = do
+        writeRef stateref s
+        senddiff' sendmidi s
 
-    senddiff' RGBOff = sendMIDI $ MIDI.MidiMessage 1 (MIDI.NoteOff note 0)
-    senddiff' (RGBSolid color) = setPrimary color
-    senddiff' (RGBOneShot  subdiv color1 color2) = 
-        setPrimary color1 >> sendMIDI (MIDI.MidiMessage (1+1 +fromEnum subdiv) (MIDI.NoteOn note (rgbColorToVel color2)))
-    senddiff' (RGBPulsing  subdiv color1 color2) = 
-        setPrimary color1 >> sendMIDI (MIDI.MidiMessage (1+6 +fromEnum subdiv) (MIDI.NoteOn note (rgbColorToVel color2)))
-    senddiff' (RGBBlinking subdiv color1 color2) =
-        setPrimary color1 >> sendMIDI (MIDI.MidiMessage (1+11+fromEnum subdiv) (MIDI.NoteOn note (rgbColorToVel color2)))
-                                                  --     ^
-                                                  -- MidiMessage channels are 1-based
+    senddiff' sendmidi RGBOff = sendmidi $ MIDI.MidiMessage 1 (MIDI.NoteOff note 0)
+    senddiff' sendmidi (RGBSolid color) = sendmidi $ setPrimary color
+    senddiff' sendmidi (RGBOneShot  subdiv color1 color2) = do
+        sendmidi $ setPrimary color1
+        sendmidi $ MIDI.MidiMessage (1+1 +fromEnum subdiv) (MIDI.NoteOn note (rgbColorToVel color2))
+    senddiff' sendmidi (RGBPulsing  subdiv color1 color2) = do
+        sendmidi $ setPrimary color1
+        sendmidi $ MIDI.MidiMessage (1+6 +fromEnum subdiv) (MIDI.NoteOn note (rgbColorToVel color2))
+    senddiff' sendmidi (RGBBlinking subdiv color1 color2) = do
+        sendmidi $ setPrimary color1
+        sendmidi $ MIDI.MidiMessage (1+11+fromEnum subdiv) (MIDI.NoteOn note (rgbColorToVel color2))
+                              --     ^
+                              -- MidiMessage channels are 1-based
 
-    setPrimary color = sendMIDI (MIDI.MidiMessage 1 (MIDI.NoteOn note (rgbColorToVel color)))
+    setPrimary color = MIDI.MidiMessage 1 (MIDI.NoteOn note (rgbColorToVel color))
 
-    getevents state (MIDI.MidiMessage _ (MIDI.NoteOff note' _)) 
+    getevents sendevent sendmidi state (MIDI.MidiMessage _ (MIDI.NoteOff note' _)) 
         | note == note' = do
-            senddiff' =<< readRef state   -- this preserves the color of the button when it is pressed
-            return (singleton False)
-    getevents state (MIDI.MidiMessage _ (MIDI.NoteOn note' vel))
+            -- this preserves the color of the button when it is pressed
+            senddiff' sendmidi =<< readRef state 
+            sendevent False
+    getevents sendevent sendmidi state (MIDI.MidiMessage _ (MIDI.NoteOn note' vel))
         | note == note' = do
-            senddiff' =<< readRef state   -- preserves button color when it's pressed
-            return $ if vel == 0 then singleton False
-                                 else singleton True
-    getevents _ _ = return mempty
+            senddiff' sendmidi =<< readRef state
+            if vel == 0 then sendevent False
+                        else sendevent True
+    getevents _ _ _ _ = return ()
 
+longRGBButton :: (MonadRefs m, MonadSched m) => Int -> MIDIControl m RGBColorState LongPress
+longRGBButton note = right (longPress 500) . rgbButton note
 
 -- The whole matrix of buttons as a single Control
 
@@ -168,50 +137,25 @@ mkCoord x y
     | otherwise = error $ "coordinate out of range: " ++ show (x,y)
 
 -- Coord indices are 1-based, and count y from the top.
-rgbMatrix :: (MonadMIDI m, MonadRefs m, MonadRefs m', Ref m ~ Ref m') 
-          => m' (Control m (Coord, RGBColorState) (Coord, Bool))
-rgbMatrix = do
-    buttons <- Array.array (Coord (1,1), Coord (8,5)) <$> 
-                 mapM (\c -> (c,) <$> rgbButton (coordToNote c)) [ Coord (i,j) | i <- [1..8], j <- [1..5] ]
-    return $ Control (senddiff buttons) (getevents buttons)
+rgbMatrix :: (MonadRefs m, MonadSched m) => MIDIControl m (Coord, RGBColorState) (Coord, LongPress)
+rgbMatrix = Control $ \out -> do
+    buttons <- fmap (Array.array (Coord (1,1), Coord (8,5))) . sequence $ do
+        coord <- [ Coord (i,j) | i <- [1..8], j <- [1..5] ]
+        return . fmap (coord,) . instControl (longRGBButton (coordToNote coord)) $ \case
+            Left midi -> out (Left midi)
+            Right button -> out (Right (coord, button))
+    return $ \case
+        Left midi -> getevents buttons midi
+        Right (coord, s) -> (buttons Array.! coord) (Right s)
     where
-    senddiff buttons (c, s) = sendDiff (buttons Array.! c) s
     getevents buttons m@(MIDI.MidiMessage _ (MIDI.NoteOn note _))
-        | Just c <- noteToCoord note = (fmap.fmap) (c,) (getEvents (buttons Array.! c) m)
+        | Just c <- noteToCoord note = (buttons Array.! c) (Left m)
     getevents buttons m@(MIDI.MidiMessage _ (MIDI.NoteOff note _))
-        | Just c <- noteToCoord note = (fmap.fmap) (c,) (getEvents (buttons Array.! c) m)
-    getevents _ _ = return mempty
+        | Just c <- noteToCoord note = (buttons Array.! c) (Left m)
+    getevents _ _ = return ()
 
     coordToNote (Coord (x,y)) = 8*(4-(y-1))+x-1
     noteToCoord n
         | 0 <= n && n < 40 = Just (Coord (n `mod` 8 + 1, 4 - n `div` 8 + 1))
         | otherwise = Nothing
 
-openOutDev :: IO MIDI.Connection
-openOutDev = MIDI.openDestination . head =<< filterM (fmap ("APC40 mkII" ==) . MIDI.getName) =<< MIDI.enumerateDestinations
-
-openInDev :: IO MIDI.Connection
-openInDev = do
-    src <- fmap head . filterM (fmap ("APC40 mkII" ==) . MIDI.getName) =<< MIDI.enumerateSources
-    conn <- MIDI.openSource src Nothing
-    MIDI.start conn
-    return conn
-
-type Devs = (MIDI.Connection, MIDI.Connection)
-openDevs :: IO Devs
-openDevs = liftA2 (,) openInDev openOutDev
-
-closeDevs :: Devs -> IO ()
-closeDevs (indev, outdev) = do
-    MIDI.stop indev
-    MIDI.close indev
-    MIDI.close outdev
-
-sendC :: Devs -> Control MIDIIO d e -> d -> IO ()
-sendC (_,outconn) ctrl d = runMIDIIO (sendDiff ctrl d) outconn
-
-recvC :: Devs -> Control MIDIIO d e -> IO [e]
-recvC (inconn,outconn) ctrl = do
-    messages <- (fmap.fmap) (\(MIDI.MidiEvent _ m) -> m) $ MIDI.getEvents inconn
-    evseq <- runMIDIIO (mconcat <$> mapM (getEvents ctrl) messages) outconn
-    return $ getSeq evseq (:[])
