@@ -6,6 +6,7 @@ module Loop
     , Loop
     , newLoop
     , runLoop
+    , clearLoop
 
     , getLoopState
     , setLoopState
@@ -33,10 +34,14 @@ data LoopBuffer = LoopBuffer
 
 newtype Loop = Loop (IORef LoopBuffer)
 
+newLoopBuffer :: IO LoopBuffer
+newLoopBuffer = do
+    loopdata <- Array.newArray (0,44099) 0
+    return $ LoopBuffer { loopSize = 0, loopPos = 0, loopData = loopdata, loopState = Disabled }
+    
 newLoop :: IO Loop
 newLoop = do
-    loopdata <- Array.newArray (0,44099) 0
-    fmap Loop . newIORef $ LoopBuffer { loopSize = 0, loopPos = 0, loopData = loopdata, loopState = Disabled }
+    fmap Loop . newIORef =<< newLoopBuffer
 
 runLoop :: Loop -> AudioBuffer -> AudioBuffer -> IO ()
 runLoop (Loop loopbufref) inbuf outbuf = do
@@ -44,7 +49,9 @@ runLoop (Loop loopbufref) inbuf outbuf = do
     case loopState loopbuf of
         Disabled -> return ()
         Appending -> append loopbufref inbuf
-        Playing -> play loopbufref outbuf
+        Playing 
+            | loopSize loopbuf /= 0 -> play loopbufref outbuf
+            | otherwise             -> return ()
 
 setLoopState :: Loop -> LoopState -> IO ()
 setLoopState (Loop loopbufref) loopstate = do
@@ -56,6 +63,10 @@ getLoopState (Loop loopbufref) = loopState <$> readIORef loopbufref
 
 modifyLoopState :: Loop -> (LoopState -> LoopState) -> IO ()
 modifyLoopState (Loop loopbufref) f = modifyIORef loopbufref (\b -> b { loopState = f (loopState b) })
+
+-- Move to purer implementation
+clearLoop :: Loop -> IO ()
+clearLoop (Loop loopbufref) = writeIORef loopbufref =<< newLoopBuffer
 
 
 append :: IORef LoopBuffer -> Array.IOUArray Int Double -> IO ()

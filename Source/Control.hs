@@ -79,33 +79,26 @@ type MIDIControl m i o = Control m (Either MIDI.MidiMessage i) (Either MIDI.Midi
 data LongPress = PressDown | PressUp | PressLong
     deriving (Eq, Show)
 
-countInputs :: (MonadRefs m) => Control m (Int,i) o -> Control m i o
-countInputs c = Control $ \out -> do
+countEvents :: (MonadRefs m) => Control m i (Int,i)
+countEvents = Control $ \out -> do
     countref <- newRef 0
-    sendI <- instControl c out
     return $ \i -> do
         count <- readRef countref
         writeRef countref $! count+1
-        sendI (count,i)
-
-countOutputs :: (MonadRefs m) => Control m i o -> Control m i (Int,o)
-countOutputs c = Control $ \out -> do
-    countref <- newRef 0
-    instControl c $ \o -> do
-        count <- readRef countref
-        writeRef countref $! count+1
-        out (count,o)
+        out (count,i)
 
 longPress :: (MonadRefs m, MonadSched m) => Word32 -> Control m Bool LongPress
-longPress delay = countInputs . Control $ \out -> do
-    downcountref <- newRef 0
-    return $ \(count, i) -> do
-        if i then do writeRef downcountref count
-                     after delay $ do
-                         downcount <- readRef downcountref
-                         if count == downcount then out PressLong else return ()
-                     out PressDown
-             else out PressUp
+longPress delay = go . countEvents
+    where
+    go = Control $ \out -> do
+        lastcountref <- newRef 0
+        return $ \(count, i) -> do
+            writeRef lastcountref count
+            if i then do after delay $ do
+                             lastcount <- readRef lastcountref
+                             if count == lastcount then out PressLong else return ()
+                         out PressDown
+                 else out PressUp
 
 
 openOutDev :: IO MIDI.Connection

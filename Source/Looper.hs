@@ -46,13 +46,18 @@ startLooper loops = sequence_ [ launchButton loop (APC.Coord (i,1)) | (i, loop) 
         playStop loop coord
 
     playStop :: Loop.Loop -> APC.Coord -> LooperM ()
-    playStop loop coord = S.when (\e -> e == (coord, PressDown)) $ do
-        S.send (coord, APC.RGBPulsing APC.Subdiv4 (APC.velToRGBColor 22) (APC.velToRGBColor 23)) 
-        liftIO $ Loop.setLoopState loop Loop.Playing
+    playStop loop coord = do
         S.when (\e -> e == (coord, PressDown)) $ do
-            S.send (coord, APC.RGBSolid (APC.velToRGBColor 14))
-            liftIO $ Loop.setLoopState loop Loop.Disabled
-            playStop loop coord
+            S.send (coord, APC.RGBPulsing APC.Subdiv4 (APC.velToRGBColor 22) (APC.velToRGBColor 23)) 
+            liftIO $ Loop.setLoopState loop Loop.Playing
+            S.when (\e -> e == (coord, PressDown)) $ do
+                S.send (coord, APC.RGBSolid (APC.velToRGBColor 14))
+                liftIO $ Loop.setLoopState loop Loop.Disabled
+                playStop loop coord
+        S.when (\e -> e == (coord, PressLong)) $ do
+            S.send (coord, APC.RGBOff)
+            liftIO $ Loop.clearLoop loop
+            launchButton loop coord
 
 data LooperState = LooperState 
     { lsMidiDevs    :: Devs
