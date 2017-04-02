@@ -9,7 +9,6 @@ import qualified System.MIDI as MIDI
 import Control.Monad.IO.Class (MonadIO(..))
 import Control.Monad.Trans.Class (MonadTrans, lift)
 import Data.Foldable (toList)
-import Data.Monoid ((<>))
 
 import Control.Monad.Trans.State
 import Data.Word
@@ -73,16 +72,20 @@ bootSequencerT devs ctrl = do
 
 -- run conditional events  (ignoring their incoming timestamps (questionable))
 processEvent :: (Monad m) => i -> SequencerT i o m ()
-processEvent i = SequencerT procFirst
+processEvent i = SequencerT $ do
+    handlers <- gets seqCondEvents
+    modify (\s -> s { seqCondEvents = Seq.empty })
+    handlers' <- go handlers
+    modify (\s -> s { seqCondEvents = handlers' })
     where
-    procFirst = do
-      condEvents <- gets seqCondEvents
-      findIndexLM (\(p, _) -> getSequencerT (p i)) condEvents >>= \case
-        Just ix | (pre, Seq.viewl -> (_, action) Seq.:< post) <- Seq.splitAt ix condEvents -> do
-            modify (\s -> s { seqCondEvents = pre <> post })
-            getSequencerT action
-            procFirst
-        _ -> return ()
+    go (Seq.viewl -> Seq.EmptyL) = gets seqCondEvents
+    go (Seq.viewl -> (condaction, action) Seq.:< hs) = do
+        cond <- getSequencerT (condaction i)
+        -- if the condition passes, the action is run then its handler is removed.
+        if cond
+            then getSequencerT action >> go hs
+            else ((condaction,action) Seq.<|) <$> go hs
+    go _ = error "impossible non-matching view pattern"
 
 tick :: (MonadIO m) => SequencerT i o m ()
 tick = SequencerT $ do
