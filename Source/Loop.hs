@@ -5,6 +5,7 @@ module Loop
     , Loop
     , newLoop
     , clearLoop
+    , getLoopSize
 
     , play
     , append
@@ -39,6 +40,8 @@ newLoop = do
 clearLoop :: Loop -> IO ()
 clearLoop (Loop loopbufref) = writeIORef loopbufref =<< newLoopBuffer
 
+getLoopSize :: Loop -> IO Int
+getLoopSize (Loop loopbufref) = loopSize <$> readIORef loopbufref
 
 ensureBuffer :: IORef LoopBuffer -> IO LoopBuffer
 ensureBuffer loopbufref = do

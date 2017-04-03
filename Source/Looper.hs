@@ -47,6 +47,7 @@ type Mix = [(Loop.Loop, Double, ActiveSlotState, Int)]
 data TransState = TransState
     { tsChannels :: Array.Array Int Channel
     , tsPosition :: Int
+    , tsQuantization :: Maybe (Int, Int)   -- period, phase  (i.e. (period*n + phase) is a barline)
     }
 
 data ActiveSlotState = Recording | Playing Int -- int is phase
@@ -71,6 +72,7 @@ instance Monoid (Transition s) where
 data SuperState = SuperState 
     { ssTransState :: TransState
     , ssLoops :: Array.Array APC.Coord Loop.Loop
+    , ssQueue :: [Transition TransState] -- reversed
     }
 
 transChannel :: Int -> Transition Channel -> Transition TransState
@@ -94,14 +96,16 @@ startLooper = do
                             , chActiveSlot = Nothing
                             }
                 , tsPosition = 0
+                , tsQuantization = Nothing
                 }
             , ssLoops = loops
+            , ssQueue = []
             } 
 
-    S.whenever (\e -> snd e == PressDown) $ \(APC.Coord (i,j), _) ->
+    S.whenever (\e -> snd e == PressDown) $ \(APC.Coord (i,j), _) -> do
         schedule $ query (\ts -> transChannel i (tapChannel i j (tsPosition ts)))
     S.whenever (\e -> snd e == PressLong) $ \(APC.Coord (i,j), _) ->
-        schedule $ transChannel i . (stopActive i <>) . Transition $ \ch -> 
+        activateTransition $ transChannel i . (stopActive i <>) . Transition $ \ch -> 
             (ch { chSlots = chSlots ch Array.// [(j, False)] },
              S.send (APC.Coord (i,j), offColor),
              liftIO . Loop.clearLoop . (Array.! APC.Coord (i,j)) =<< lift (gets ssLoops))
@@ -110,6 +114,18 @@ startLooper = do
         loops <- lift $ gets ssLoops
         channels <- lift $ gets (tsChannels . ssTransState)
         pos <- lift $ gets (tsPosition . ssTransState)
+
+        quant <- lift $ gets (tsQuantization . ssTransState)
+        let runqueue = case quant of
+                        Nothing -> True
+                        Just (period, phase) -> 
+                            ((pos-phase) `div` period) /= ((pos-phase)-winsize) `div` period
+        if runqueue then do
+            queue <- lift (gets ssQueue)
+            lift $ modify (\s -> s { ssQueue = [] })
+            forM_ (reverse queue) activateTransition
+        else return ()
+
         let mix = catMaybes . flip map (Array.assocs channels)  $ \(i,ch) ->
                 if | Just (j, state) <- chActiveSlot ch -> 
                         Just (loops Array.! APC.Coord (i,j), 1, state, pos)
@@ -122,7 +138,7 @@ startLooper = do
         if | Just (j', Recording) <- chActiveSlot ch,
              j' == j -> Transition $ const (ch { chActiveSlot = Just (j, Playing pos) }, 
                                             S.send (APC.Coord (i,j), playingColor),
-                                            return ())
+                                            maybeSetQuantization i j)
            | Just (j', Playing _) <- chActiveSlot ch,
              j' == j -> stopActive i
            | chSlots ch Array.! j -> stopActive i <> Transition (const
@@ -135,6 +151,14 @@ startLooper = do
                       S.send (APC.Coord (i,j), recordingColor),
                       return ()))
 
+    maybeSetQuantization i j = do
+        transstate <- lift $ gets ssTransState
+        if (tsQuantization transstate == Nothing) then do
+            loop <- lift . gets $ (Array.! APC.Coord (i,j)) . ssLoops
+            loopsize <- liftIO $ Loop.getLoopSize loop
+            lift $ modify (\s -> s { ssTransState = (ssTransState s) { tsQuantization = Just (loopsize, tsPosition transstate) } })
+        else return ()
+            
     stopActive i = Transition $ \ch ->
         if | Just (j, _) <- chActiveSlot ch -> 
                 (ch { chActiveSlot = Nothing }, S.send (APC.Coord (i,j), stoppedColor), return ())
@@ -145,13 +169,13 @@ startLooper = do
     stoppedColor   = APC.RGBSolid (APC.velToRGBColor 14)
     offColor       = APC.RGBOff
 
-    schedule t = do
-        transstate <- lift $ gets ssTransState
-        let (transstate', lights, action) = runTransition t transstate
+    schedule t = lift $ modify (\s -> s { ssQueue = t : ssQueue s })
+
+    activateTransition t = do
+        (transstate', lights, action) <- runTransition t <$> lift (gets ssTransState)
         lift $ modify (\s -> s { ssTransState = transstate' })
         lights
         action
-
 
 data LooperState = LooperState 
     { lsMidiDevs    :: Devs
