@@ -141,6 +141,7 @@ rgbMatrix = Control $ \out -> do
 
 apc40Raw :: (MonadRefs m, MonadSched m) => MIDIControl m (Coord, RGBColorState) (Coord, LongPress)
 apc40Raw = Control $ \out -> do
+    -- reset device
     out (Left (MIDI.SysEx [
         0x47, 0x7f, 0x29, 0x60, 0x00, 0x04, 
         0x40 + 0x2, --- Ableton live mode 2 (lights don't do shit unless you tell them to)

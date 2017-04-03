@@ -17,7 +17,7 @@ where
 
 import qualified Data.Array.IO as Array
 
-import Control.Monad (forM_)
+import Control.Monad (forM_, when)
 
 import Data.IORef
 
@@ -37,7 +37,7 @@ newtype Loop = Loop (IORef LoopBuffer)
 
 newLoopBuffer :: IO LoopBuffer
 newLoopBuffer = do
-    loopdata <- Array.newArray (0,44099) 0
+    loopdata <- Array.newArray (0,-1) 0
     return $ LoopBuffer { loopSize = 0, loopPos = 0, loopData = loopdata, loopState = Disabled }
     
 newLoop :: IO Loop
@@ -76,9 +76,18 @@ setLoopPos (Loop loopbufref) pos = modifyIORef loopbufref (\loop -> loop { loopP
     x `wrap` m = x `mod` m
 
 
+ensureBuffer :: IORef LoopBuffer -> IO LoopBuffer
+ensureBuffer loopbufref = do
+    loopbuf <- readIORef loopbufref
+    bufsize <- getSize (loopData loopbuf)
+    when (bufsize == 0) $ do
+        loopdata' <- Array.newArray (0,44099) 0
+        writeIORef loopbufref (loopbuf { loopData = loopdata' })
+    readIORef loopbufref
+
 append :: IORef LoopBuffer -> Array.IOUArray Int Double -> IO ()
 append loopbufref inbuf = do
-    loopbuf <- readIORef loopbufref
+    loopbuf <- ensureBuffer loopbufref
     bufsize <- getSize inbuf
     loopbufsize <- getSize (loopData loopbuf)
     -- NB. reallocates at most once.  *Should* be enough but not technically correct.

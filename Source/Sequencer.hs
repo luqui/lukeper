@@ -21,7 +21,7 @@ data SeqState m i o = SeqState
     { seqMidiDevs    :: Devs
     , seqController  :: Either MIDI.MidiMessage o -> m ()
     , seqTimedEvents :: Map.Map Time (m ())
-    , seqCondEvents  :: Seq.Seq (i -> m Bool, m ())
+    , seqCondEvents  :: Seq.Seq (i -> m Bool, i -> m ())
     , seqCurrentTime :: Word32
     }
 
@@ -88,7 +88,7 @@ processEvent i = SequencerT $ do
         cond <- getSequencerT (condaction i)
         -- if the condition passes, the action is run then its handler is removed.
         if cond
-            then getSequencerT action >> go hs
+            then getSequencerT (action i) >> go hs
             else ((condaction,action) Seq.<|) <$> go hs
     go _ = error "impossible non-matching view pattern"
 
@@ -111,18 +111,18 @@ tick = SequencerT $ do
 
 
 
-when :: (Monad m) => (i -> Bool) -> SequencerT i o m () -> SequencerT i o m ()
+when :: (Monad m) => (i -> Bool) -> (i -> SequencerT i o m ()) -> SequencerT i o m ()
 when cond = whenM (return . cond)
 
-whenM :: (Monad m) => (i -> SequencerT i o m Bool) -> SequencerT i o m () -> SequencerT i o m ()
+whenM :: (Monad m) => (i -> SequencerT i o m Bool) -> (i -> SequencerT i o m ()) -> SequencerT i o m ()
 whenM cond action = SequencerT $
     modify $ \s -> s { seqCondEvents = seqCondEvents s Seq.|> (cond, action) }
 
-whenever :: (Monad m) => (i -> Bool) -> SequencerT i o m () -> SequencerT i o m ()
+whenever :: (Monad m) => (i -> Bool) -> (i -> SequencerT i o m ()) -> SequencerT i o m ()
 whenever cond = wheneverM (return . cond)
 
-wheneverM :: (Monad m) => (i -> SequencerT i o m Bool) -> SequencerT i o m () -> SequencerT i o m ()
-wheneverM cond action = whenM cond (action >> wheneverM cond action)
+wheneverM :: (Monad m) => (i -> SequencerT i o m Bool) -> (i -> SequencerT i o m ()) -> SequencerT i o m ()
+wheneverM cond action = whenM cond (\i -> action i >> wheneverM cond action)
 
 send :: (Monad m) => o -> SequencerT i o m ()
 send o = SequencerT $ do

@@ -4,11 +4,13 @@ module Control where
 
 import Prelude hiding (id, (.))
 
+import qualified Control.Monad.Trans.State as StateT
 import qualified Data.IORef as IORef
 import qualified System.MIDI as MIDI
 
 import Control.Applicative (liftA2)
 import Control.Monad (filterM)
+import Control.Monad.Trans.Class (lift)
 import Data.Word (Word32)
 
 import Control.Category
@@ -72,6 +74,12 @@ instance MonadRefs IO where
     newRef = IORef.newIORef
     readRef = IORef.readIORef
     writeRef = IORef.writeIORef
+
+instance (MonadRefs m) => MonadRefs (StateT.StateT s m) where
+    type Ref (StateT.StateT s m) = Ref m
+    newRef = lift . newRef
+    readRef = lift . readRef
+    writeRef r = lift . writeRef r
 
 
 type MIDIControl m i o = Control m (Either MIDI.MidiMessage i) (Either MIDI.MidiMessage o)
