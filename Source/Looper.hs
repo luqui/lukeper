@@ -9,7 +9,7 @@ import qualified Data.Time.Clock as Clock
 import qualified Foreign.Ptr as Foreign
 import qualified System.IO as IO
 
-import Control.Monad (forM, forM_)
+import Control.Monad (forM_)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Class (lift)
 import Data.Maybe (catMaybes)
@@ -41,14 +41,15 @@ type ControlIn = (APC.Coord, LongPress)
 type ControlOut = (APC.Coord, APC.RGBColorState)
 type LooperM = S.SequencerT ControlIn ControlOut (StateT SuperState IO)
 
-type Mix = [(Double, Loop.Loop)]
+type Mix = [(Loop.Loop, Double, ActiveSlotState, Int)]
 
 
 data TransState = TransState
     { tsChannels :: Array.Array Int Channel
+    , tsPosition :: Int
     }
 
-data ActiveSlotState = Recording | Playing
+data ActiveSlotState = Recording | Playing Int -- int is phase
     deriving (Eq)
 
 data Channel = Channel
@@ -57,14 +58,14 @@ data Channel = Channel
     }
 
 
-data Transition s = Transition { runTransition :: s -> (s, LooperM ()) }
+data Transition s = Transition { runTransition :: s -> (s, LooperM (), LooperM ()) }
 
 instance Monoid (Transition s) where
-    mempty = Transition (\t -> (t, return ()))
+    mempty = Transition (\t -> (t, return (), return ()))
     mappend (Transition f) (Transition g) = Transition $ \t -> 
-        let (t', m) = f t
-            (t'', m') = g t'
-        in (t'', m >> m')
+        let (t', c, a) = f t
+            (t'', c', a') = g t'
+        in (t'', c >> c', a >> a')
 
 
 data SuperState = SuperState 
@@ -74,13 +75,13 @@ data SuperState = SuperState
 
 transChannel :: Int -> Transition Channel -> Transition TransState
 transChannel i (Transition f) = Transition $ \s -> 
-        let (ch', lights) = f (tsChannels s Array.! i) in
-        (s { tsChannels = tsChannels s Array.// [(i, ch')] }, lights)
+        let (ch', lights, changes) = f (tsChannels s Array.! i) in
+        (s { tsChannels = tsChannels s Array.// [(i, ch')] }, lights, changes)
 
 query :: (s -> Transition s) -> Transition s
 query f = Transition (\s -> runTransition (f s) s)
 
-startLooper :: LooperM (LooperM Mix)
+startLooper :: LooperM (Int -> LooperM Mix)
 startLooper = do
     -- setup state
     lift $ do
@@ -92,55 +93,52 @@ startLooper = do
                     Channel { chSlots = Array.listArray (1,5) . replicate 5 $ False
                             , chActiveSlot = Nothing
                             }
+                , tsPosition = 0
                 }
             , ssLoops = loops
             } 
 
     S.whenever (\e -> snd e == PressDown) $ \(APC.Coord (i,j), _) ->
-        schedule . transChannel i $ tapChannel i j
+        schedule $ query (\ts -> transChannel i (tapChannel i j (tsPosition ts)))
     S.whenever (\e -> snd e == PressLong) $ \(APC.Coord (i,j), _) ->
-        schedule . transChannel i . (stopActive i <>) . Transition $ \ch -> 
+        schedule $ transChannel i . (stopActive i <>) . Transition $ \ch -> 
             (ch { chSlots = chSlots ch Array.// [(j, False)] },
-             S.send (APC.Coord (i,j), offColor))
+             S.send (APC.Coord (i,j), offColor),
+             liftIO . Loop.clearLoop . (Array.! APC.Coord (i,j)) =<< lift (gets ssLoops))
 
-    return $ do
+    return $ \winsize -> do
         loops <- lift $ gets ssLoops
         channels <- lift $ gets (tsChannels . ssTransState)
-        activeLoops <- liftIO . fmap catMaybes . forM (Array.assocs loops) $ \(APC.Coord (i,j), loop) -> do
-            if | Just (j', Playing) <- chActiveSlot (channels Array.! i), j' == j -> do
-                    loopstate <- Loop.getLoopState loop
-                    if loopstate /= Loop.Playing then Loop.setLoopPos loop 0 else return ()
-                    Loop.setLoopState loop Loop.Playing
-                    return (Just loop)
-               | Just (j', Recording) <- chActiveSlot (channels Array.! i), j' == j -> do
-                    loopstate <- Loop.getLoopState loop
-                    if loopstate /= Loop.Appending then Loop.clearLoop loop else return ()
-                    Loop.setLoopState loop Loop.Appending
-                    return (Just loop)
-                | otherwise -> do
-                    Loop.setLoopState loop Loop.Disabled
-                    return Nothing
-        return $ map (1,) activeLoops
+        pos <- lift $ gets (tsPosition . ssTransState)
+        let mix = catMaybes . flip map (Array.assocs channels)  $ \(i,ch) ->
+                if | Just (j, state) <- chActiveSlot ch -> 
+                        Just (loops Array.! APC.Coord (i,j), 1, state, pos)
+                   | otherwise -> Nothing
+        lift $ modify (\s -> s { ssTransState = (ssTransState s) { tsPosition = tsPosition (ssTransState s) + winsize } })
+        return mix
 
     where
-    tapChannel i j = query $ \ch -> 
+    tapChannel i j pos = query $ \ch -> 
         if | Just (j', Recording) <- chActiveSlot ch,
-             j' == j -> Transition $ const (ch { chActiveSlot = Just (j, Playing) }, 
-                                            S.send (APC.Coord (i,j), playingColor))
-           | Just (j', Playing) <- chActiveSlot ch,
+             j' == j -> Transition $ const (ch { chActiveSlot = Just (j, Playing pos) }, 
+                                            S.send (APC.Coord (i,j), playingColor),
+                                            return ())
+           | Just (j', Playing _) <- chActiveSlot ch,
              j' == j -> stopActive i
            | chSlots ch Array.! j -> stopActive i <> Transition (const
-                     (ch { chActiveSlot = Just (j, Playing) },
-                      S.send (APC.Coord (i,j), playingColor)))
+                     (ch { chActiveSlot = Just (j, Playing pos) },
+                      S.send (APC.Coord (i,j), playingColor),
+                      return ()))
            -- not (chSlots ch Array.! j)
            | otherwise -> stopActive i <> Transition (const
                      (ch { chSlots = chSlots ch Array.// [(j, True)], chActiveSlot = Just (j, Recording) },
-                      S.send (APC.Coord (i,j), recordingColor)))
+                      S.send (APC.Coord (i,j), recordingColor),
+                      return ()))
 
     stopActive i = Transition $ \ch ->
         if | Just (j, _) <- chActiveSlot ch -> 
-                (ch { chActiveSlot = Nothing }, S.send (APC.Coord (i,j), stoppedColor))
-           | otherwise  -> (ch, return ())
+                (ch { chActiveSlot = Nothing }, S.send (APC.Coord (i,j), stoppedColor), return ())
+           | otherwise  -> (ch, return (), return ())
 
     playingColor   = APC.RGBPulsing APC.Subdiv4 (APC.velToRGBColor 22) (APC.velToRGBColor 23)
     recordingColor = APC.RGBPulsing APC.Subdiv4 (APC.velToRGBColor 6) (APC.velToRGBColor 7)
@@ -149,14 +147,15 @@ startLooper = do
 
     schedule t = do
         transstate <- lift $ gets ssTransState
-        let (transstate', lights) = runTransition t transstate
+        let (transstate', lights, action) = runTransition t transstate
         lift $ modify (\s -> s { ssTransState = transstate' })
         lights
+        action
 
 
 data LooperState = LooperState 
     { lsMidiDevs    :: Devs
-    , lsFrame       :: LooperM Mix
+    , lsFrame       :: Int -> LooperM Mix
     , lsSeqState    :: IORef (S.SeqState LooperM ControlIn ControlOut, SuperState)
     }
 
@@ -178,7 +177,7 @@ hs_looper_main state window input output channels = wrapErrors "hs_looper_main" 
 hsLooperMain :: LooperState -> Int -> Int -> Int -> Foreign.Ptr (Foreign.Ptr Float) -> IO ()
 hsLooperMain looperstate window _inchannels _outchannels channels = do
     (seqstate, superstate) <- readIORef (lsSeqState looperstate)
-    ((mix, seqstate'), superstate') <- runStateT (S.runSequencerT (S.tick >> lsFrame looperstate) seqstate) superstate
+    ((mix, seqstate'), superstate') <- runStateT (S.runSequencerT (S.tick >> lsFrame looperstate window) seqstate) superstate
     writeIORef (lsSeqState looperstate) (seqstate', superstate')
     
     inbuf <- peekElemOff channels 0
@@ -187,8 +186,10 @@ hsLooperMain looperstate window _inchannels _outchannels channels = do
                     =<< mapM (fmap realToFrac . peekElemOff inbuf) [0..window-1]
     outbufarray <- IOArray.newArray (0,window-1) 0
 
-    forM_ mix $ \(level,loop) -> 
-        Loop.runLoop loop inbufarray level outbufarray
+    forM_ mix $ \(loop, level, state, pos) -> 
+        case state of
+            Recording -> Loop.append loop pos inbufarray
+            Playing phase -> Loop.play loop (pos - phase) level outbufarray
 
     outbufL <- peekElemOff channels 0
     outbufR <- peekElemOff channels 1
