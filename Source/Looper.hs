@@ -9,10 +9,10 @@ import qualified Data.Time.Clock as Clock
 import qualified Foreign.Ptr as Foreign
 import qualified System.IO as IO
 
-import Control.Monad (forM_)
+import Control.Monad (forM, forM_)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Class (lift)
-import Data.Foldable (toList)
+import Data.Maybe (catMaybes)
 import Data.Monoid (Monoid(..), (<>))
 
 import Control.Monad.Trans.State (StateT, gets, put, modify, runStateT)
@@ -105,17 +105,21 @@ startLooper = do
 
     return $ do
         loops <- lift $ gets ssLoops
-        activeLoopIds <- lift $ map chActiveSlot <$> gets (toList . tsChannels . ssTransState)
-        activeLoops <- liftIO . sequence $ do
-            (i, Just (j, state)) <- zip [1..] activeLoopIds
-            let loop = loops Array.! APC.Coord (i,j)
-            let setAction = case state of
-                    Recording -> do
-                        loopstate <- Loop.getLoopState loop
-                        if loopstate /= Loop.Appending then Loop.clearLoop loop else return ()
-                        Loop.setLoopState loop Loop.Appending
-                    Playing -> Loop.setLoopState loop Loop.Playing
-            return $ setAction >> return loop
+        channels <- lift $ gets (tsChannels . ssTransState)
+        activeLoops <- liftIO . fmap catMaybes . forM (Array.assocs loops) $ \(APC.Coord (i,j), loop) -> do
+            if | Just (j', Playing) <- chActiveSlot (channels Array.! i), j' == j -> do
+                    loopstate <- Loop.getLoopState loop
+                    if loopstate /= Loop.Playing then Loop.setLoopPos loop 0 else return ()
+                    Loop.setLoopState loop Loop.Playing
+                    return (Just loop)
+               | Just (j', Recording) <- chActiveSlot (channels Array.! i), j' == j -> do
+                    loopstate <- Loop.getLoopState loop
+                    if loopstate /= Loop.Appending then Loop.clearLoop loop else return ()
+                    Loop.setLoopState loop Loop.Appending
+                    return (Just loop)
+                | otherwise -> do
+                    Loop.setLoopState loop Loop.Disabled
+                    return Nothing
         return $ map (1,) activeLoops
 
     where
