@@ -74,7 +74,7 @@ hs_looper_init :: IO (StablePtr LooperState)
 hs_looper_init = wrapErrors "hs_looper_init" $ do
     devs <- openDevs
     loops <- replicateM 8 Loop.newLoop
-    (frame, seqstate) <- S.runSequencerT (startLooper loops) =<< S.bootSequencerT devs APC.rgbMatrix
+    (frame, seqstate) <- S.runSequencerT (startLooper loops) =<< S.bootSequencerT devs APC.apc40Raw
     seqstateref <- newIORef seqstate
     newStablePtr $ LooperState { lsMidiDevs = devs
                                , lsFrame = frame

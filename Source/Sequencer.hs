@@ -60,15 +60,20 @@ bootSequencerT devs ctrl = do
             { seqMidiDevs = devs
             -- When we boot, we haven't set up any event handlers yet, so we just ignore
             -- "o" events.
-            , seqController = either (liftIO . MIDI.send (snd devs)) (const (return ()))
+            , seqController = either (liftIO . sendMIDI (snd devs)) (const (return ()))
             , seqTimedEvents = Map.empty
             , seqCondEvents = Seq.empty
             , seqCurrentTime = time0
             }
     (sendO,state1) <- flip runSequencerT state0 . instControl ctrl $ \case
-        Left midiEvent -> liftIO (MIDI.send (snd devs) midiEvent)
+        Left midiEvent -> liftIO (sendMIDI (snd devs) midiEvent)
         Right i -> processEvent i
     return $ state1 { seqController = sendO }
+
+sendMIDI :: MIDI.Connection -> MIDI.MidiMessage -> IO ()
+-- Why exactly does hmidi reject sysex sends and require a special method?
+sendMIDI conn (MIDI.SysEx sysex) = MIDI.sendSysEx conn sysex
+sendMIDI conn m = MIDI.send conn m
 
 -- run conditional events  (ignoring their incoming timestamps (questionable))
 processEvent :: (Monad m) => i -> SequencerT i o m ()

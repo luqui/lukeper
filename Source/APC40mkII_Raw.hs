@@ -74,27 +74,22 @@ data RGBColorState
 
 rgbButton :: (MonadRefs m) => Int -> MIDIControl m RGBColorState Bool
 rgbButton note = Control $ \out -> do
-    stateref <- newRef RGBOff
     let sendmidi = out . Left
     let sendevent = out . Right
     return $ \case
-        Left midimessage -> getevents sendevent sendmidi stateref midimessage
-        Right colorstate -> senddiff sendmidi stateref colorstate
+        Left midimessage -> getevents sendevent midimessage
+        Right colorstate -> senddiff sendmidi colorstate
     where
-    senddiff sendmidi stateref s = do
-        writeRef stateref s
-        senddiff' sendmidi s
-
-    senddiff' :: (Monad m) => (MIDI.MidiMessage -> m ()) -> RGBColorState -> m ()
-    senddiff' sendmidi RGBOff = sendmidi $ MIDI.MidiMessage 1 (MIDI.NoteOff note 0)
-    senddiff' sendmidi (RGBSolid color) = sendmidi $ setPrimary color
-    senddiff' sendmidi (RGBOneShot  subdiv color1 color2) = do
+    senddiff :: (Monad m) => (MIDI.MidiMessage -> m ()) -> RGBColorState -> m ()
+    senddiff sendmidi RGBOff = sendmidi $ MIDI.MidiMessage 1 (MIDI.NoteOff note 0)
+    senddiff sendmidi (RGBSolid color) = sendmidi $ setPrimary color
+    senddiff sendmidi (RGBOneShot  subdiv color1 color2) = do
         sendmidi $ setPrimary color1
         sendmidi $ MIDI.MidiMessage (1+1 +fromEnum subdiv) (MIDI.NoteOn note (rgbColorToVel color2))
-    senddiff' sendmidi (RGBPulsing  subdiv color1 color2) = do
+    senddiff sendmidi (RGBPulsing  subdiv color1 color2) = do
         sendmidi $ setPrimary color1
         sendmidi $ MIDI.MidiMessage (1+6 +fromEnum subdiv) (MIDI.NoteOn note (rgbColorToVel color2))
-    senddiff' sendmidi (RGBBlinking subdiv color1 color2) = do
+    senddiff sendmidi (RGBBlinking subdiv color1 color2) = do
         sendmidi $ setPrimary color1
         sendmidi $ MIDI.MidiMessage (1+11+fromEnum subdiv) (MIDI.NoteOn note (rgbColorToVel color2))
                               --     ^
@@ -102,17 +97,11 @@ rgbButton note = Control $ \out -> do
 
     setPrimary color = MIDI.MidiMessage 1 (MIDI.NoteOn note (rgbColorToVel color))
 
-    getevents sendevent sendmidi state (MIDI.MidiMessage _ (MIDI.NoteOff note' _)) 
-        | note == note' = do
-            -- this preserves the color of the button when it is pressed
-            senddiff' sendmidi =<< readRef state 
-            sendevent False
-    getevents sendevent sendmidi state (MIDI.MidiMessage _ (MIDI.NoteOn note' vel))
-        | note == note' = do
-            senddiff' sendmidi =<< readRef state
-            if vel == 0 then sendevent False
-                        else sendevent True
-    getevents _ _ _ _ = return ()
+    getevents sendevent (MIDI.MidiMessage _ (MIDI.NoteOff note' _)) 
+        | note == note' = sendevent False
+    getevents sendevent (MIDI.MidiMessage _ (MIDI.NoteOn note' vel))
+        | note == note' = sendevent (vel /= 0)
+    getevents _ _ = return ()
 
 longRGBButton :: (MonadRefs m, MonadSched m) => Int -> MIDIControl m RGBColorState LongPress
 longRGBButton note = right (longPress 500) . rgbButton note
@@ -150,3 +139,13 @@ rgbMatrix = Control $ \out -> do
         | 0 <= n && n < 40 = Just (Coord (n `mod` 8 + 1, 4 - n `div` 8 + 1))
         | otherwise = Nothing
 
+apc40Raw :: (MonadRefs m, MonadSched m) => MIDIControl m (Coord, RGBColorState) (Coord, LongPress)
+apc40Raw = Control $ \out -> do
+    out (Left (MIDI.SysEx [
+        0x47, 0x7f, 0x29, 0x60, 0x00, 0x04, 
+        0x40 + 0x2, --- Ableton live mode 2 (lights don't do shit unless you tell them to)
+        0x00, -- version high
+        0x00, -- version low
+        0x00  -- version bugfix
+        ]))
+    instControl rgbMatrix out
