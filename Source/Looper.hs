@@ -16,7 +16,7 @@ import Data.Word
 import Foreign.StablePtr
 import Foreign.Storable
 
-import qualified APC40mkII as APC
+import qualified APC40mkII_Raw as APC
 import qualified Loop as Loop
 import qualified Sequencer as S
 import Control

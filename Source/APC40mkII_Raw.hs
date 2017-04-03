@@ -1,6 +1,6 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving, LambdaCase, TupleSections #-}
 
-module APC40mkII where
+module APC40mkII_Raw where
 
 -- Types:
 --   State of virtual controller

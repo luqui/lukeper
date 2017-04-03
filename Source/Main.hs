@@ -4,7 +4,7 @@ module Main where
 -- Should automate this step...
 
 import Looper
-import APC40mkII
+import APC40mkII_Raw
 import Sequencer
 import Loop
 
