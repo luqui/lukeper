@@ -7,6 +7,7 @@ module Loop
     , newLoop
     , runLoop
     , clearLoop
+    , setLoopPos
 
     , getLoopState
     , setLoopState
@@ -43,14 +44,14 @@ newLoop :: IO Loop
 newLoop = do
     fmap Loop . newIORef =<< newLoopBuffer
 
-runLoop :: Loop -> AudioBuffer -> AudioBuffer -> IO ()
-runLoop (Loop loopbufref) inbuf outbuf = do
+runLoop :: Loop -> AudioBuffer -> Double -> AudioBuffer -> IO ()
+runLoop (Loop loopbufref) inbuf mixout outbuf = do
     loopbuf <- readIORef loopbufref
     case loopState loopbuf of
         Disabled -> return ()
         Appending -> append loopbufref inbuf
         Playing 
-            | loopSize loopbuf /= 0 -> play loopbufref outbuf
+            | loopSize loopbuf /= 0 -> play loopbufref mixout outbuf
             | otherwise             -> return ()
 
 setLoopState :: Loop -> LoopState -> IO ()
@@ -67,6 +68,12 @@ modifyLoopState (Loop loopbufref) f = modifyIORef loopbufref (\b -> b { loopStat
 -- Move to purer implementation
 clearLoop :: Loop -> IO ()
 clearLoop (Loop loopbufref) = writeIORef loopbufref =<< newLoopBuffer
+
+setLoopPos :: Loop -> Int -> IO ()
+setLoopPos (Loop loopbufref) pos = modifyIORef loopbufref (\loop -> loop { loopPos = pos `wrap` loopSize loop })
+    where
+    _ `wrap` 0 = 0
+    x `wrap` m = x `mod` m
 
 
 append :: IORef LoopBuffer -> Array.IOUArray Int Double -> IO ()
@@ -86,14 +93,14 @@ append loopbufref inbuf = do
                 , loopData = loopdata'
                 }
 
-play :: IORef LoopBuffer -> Array.IOUArray Int Double -> IO ()
-play loopbufref outbuf = do
+play :: IORef LoopBuffer -> Double -> Array.IOUArray Int Double -> IO ()
+play loopbufref mixout outbuf = do
     loopbuf <- readIORef loopbufref
     bufsize <- getSize outbuf
     forM_ [0..bufsize-1] $ \i -> do
         cur <- Array.readArray outbuf i
         samp <- Array.readArray (loopData loopbuf) ((loopPos loopbuf + i) `mod` loopSize loopbuf)
-        Array.writeArray outbuf i (cur+samp)
+        Array.writeArray outbuf i (cur + mixout*samp)
     writeIORef loopbufref $ loopbuf { loopPos = loopPos loopbuf + bufsize `mod` loopSize loopbuf }
 
 

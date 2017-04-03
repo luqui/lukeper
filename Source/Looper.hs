@@ -1,4 +1,4 @@
-{-# LANGUAGE FlexibleContexts, RecordWildCards, ScopedTypeVariables #-}
+{-# LANGUAGE FlexibleContexts, RecordWildCards, ScopedTypeVariables, TupleSections #-}
 
 module Looper where
 
@@ -32,12 +32,17 @@ foreign export ccall hs_looper_main
     -> IO ()
 foreign export ccall hs_looper_exit :: StablePtr LooperState -> IO ()
 
-type ControlOut = (APC.Coord, LongPress)
-type ControlIn = (APC.Coord, APC.RGBColorState)
-type LooperM = S.SequencerT ControlOut ControlIn IO
+type ControlIn = (APC.Coord, LongPress)
+type ControlOut = (APC.Coord, APC.RGBColorState)
+type LooperM = S.SequencerT ControlIn ControlOut IO
 
-startLooper :: [Loop.Loop] -> LooperM ()
-startLooper loops = sequence_ [ launchButton loop (APC.Coord (i,1)) | (i, loop) <- zip [1..] loops ]
+type Mix = [(Double, Loop.Loop)]
+
+startLooper :: [Loop.Loop] -> LooperM (LooperM Mix)
+startLooper loops = do
+    sequence_ [ launchButton loop (APC.Coord (i,1)) | (i, loop) <- zip [1..] loops ]
+    return $ do
+        return $ map (1,) loops
     where
     launchButton :: Loop.Loop -> APC.Coord -> LooperM ()
     launchButton loop coord = S.when (\e -> e == (coord, PressDown)) $ do
@@ -61,18 +66,18 @@ startLooper loops = sequence_ [ launchButton loop (APC.Coord (i,1)) | (i, loop) 
 
 data LooperState = LooperState 
     { lsMidiDevs    :: Devs
-    , lsLoops       :: [Loop.Loop]
-    , lsSeqState    :: IORef (S.SeqState LooperM ControlOut ControlIn)
+    , lsFrame       :: LooperM Mix
+    , lsSeqState    :: IORef (S.SeqState LooperM ControlIn ControlOut)
     }
 
 hs_looper_init :: IO (StablePtr LooperState)
 hs_looper_init = wrapErrors "hs_looper_init" $ do
     devs <- openDevs
     loops <- replicateM 8 Loop.newLoop
-    ((), seqstate) <- S.runSequencerT (startLooper loops) =<< S.bootSequencerT devs APC.rgbMatrix
+    (frame, seqstate) <- S.runSequencerT (startLooper loops) =<< S.bootSequencerT devs APC.rgbMatrix
     seqstateref <- newIORef seqstate
     newStablePtr $ LooperState { lsMidiDevs = devs
-                               , lsLoops = loops
+                               , lsFrame = frame
                                , lsSeqState = seqstateref
                                }
 
@@ -84,7 +89,7 @@ hs_looper_main state window input output channels = wrapErrors "hs_looper_main" 
 hsLooperMain :: LooperState -> Int -> Int -> Int -> Foreign.Ptr (Foreign.Ptr Float) -> IO ()
 hsLooperMain looperstate window _inchannels _outchannels channels = do
     seqstate <- readIORef (lsSeqState looperstate)
-    ((), seqstate') <- S.runSequencerT S.tick seqstate
+    (mix, seqstate') <- S.runSequencerT (S.tick >> lsFrame looperstate) seqstate
     writeIORef (lsSeqState looperstate) seqstate'
     
     inbuf <- peekElemOff channels 0
@@ -93,7 +98,8 @@ hsLooperMain looperstate window _inchannels _outchannels channels = do
                     =<< mapM (fmap realToFrac . peekElemOff inbuf) [0..window-1]
     outbufarray <- Array.newArray (0,window-1) 0
 
-    mapM_ (\loop -> Loop.runLoop loop inbufarray outbufarray) (lsLoops looperstate)
+    forM_ mix $ \(level,loop) -> 
+        Loop.runLoop loop inbufarray level outbufarray
 
     outbufL <- peekElemOff channels 0
     outbufR <- peekElemOff channels 1
