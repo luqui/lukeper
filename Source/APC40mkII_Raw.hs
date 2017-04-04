@@ -76,6 +76,7 @@ rgbButton :: (MonadRefs m) => Int -> MIDIControl m RGBColorState Bool
 rgbButton note = Control $ \out -> do
     let sendmidi = out . Left
     let sendevent = out . Right
+    sendmidi (MIDI.MidiMessage 1 (MIDI.NoteOff note 0))
     return $ \case
         Left midimessage -> getevents sendevent midimessage
         Right colorstate -> senddiff sendmidi colorstate
