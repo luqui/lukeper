@@ -17,6 +17,7 @@ public:
     ~HsLooper();
     
     void process_samples(uint32 window_size, uint32 in_channels, uint32 out_channels, float** channel_data);
+    std::string uilog();
 private:
     void* _state;
 };

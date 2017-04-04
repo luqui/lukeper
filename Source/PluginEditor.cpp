@@ -18,7 +18,7 @@ extern "C" {
 
 //==============================================================================
 LukeperAudioProcessorEditor::LukeperAudioProcessorEditor (LukeperAudioProcessor& p)
-    : AudioProcessorEditor (&p), _processor (p)
+    : AudioProcessorEditor (&p), _processor (p), _paintcalls(0)
 {
     // Make sure that before the constructor has finished, you've set the
     // editor's size to whatever you need it to be.
@@ -34,23 +34,10 @@ void LukeperAudioProcessorEditor::paint (Graphics& g)
 {
     g.fillAll (Colours::white);
 
-    /*
     g.setColour (Colours::black);
     g.setFont (15.0f);
-    if (_processor.recording()) {
-        juce::String s("recording: ");
-        s += foo(41);
-        s += _processor.loopBufIndex();
-        g.drawFittedText (s, getLocalBounds(), Justification::centred, 1);
-    }
-    else {
-        juce::String s("playing: ");
-        s += foo(41);
-        s += _processor.loopBufIndex();
-        g.drawFittedText (s, getLocalBounds(), Justification::centred, 1);
-    }
+    g.drawFittedText(_processor.getLooper().uilog(), getLocalBounds(), Justification::centred, 30);
     repaint();
-    */
 }
 
 void LukeperAudioProcessorEditor::resized()

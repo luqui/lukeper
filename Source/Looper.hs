@@ -9,7 +9,7 @@ import qualified Data.Time.Clock as Clock
 import qualified Foreign.Ptr as Foreign
 import qualified System.IO as IO
 
-import Control.Monad (forM_)
+import Control.Monad (forM, forM_)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.State (StateT, get, gets, put, modify, runStateT)
@@ -22,6 +22,7 @@ import Foreign.StablePtr
 import Foreign.Storable
 
 import qualified APC40mkII_Raw as APC
+import qualified Foreign.C.String as C
 import qualified Loop as Loop
 import qualified Sequencer as S
 import Control
@@ -35,6 +36,7 @@ foreign export ccall hs_looper_main
     -> Word32                          -- output channels
     -> Foreign.Ptr (Foreign.Ptr Float) -- channel data
     -> IO ()
+foreign export ccall hs_looper_uilog :: StablePtr LooperState -> IO C.CString
 foreign export ccall hs_looper_exit :: StablePtr LooperState -> IO ()
 
 type ControlIn = (APC.Coord, LongPress)
@@ -53,7 +55,7 @@ data ControlState = ControlState
     }
 
 data ActiveSlotState = Recording | Playing Int -- int is phase
-    deriving (Eq)
+    deriving (Eq, Show)
 
 data Channel = Channel
     { chSlots :: Array.Array Int Bool
@@ -213,6 +215,22 @@ hsLooperMain looperstate window _inchannels _outchannels channels = do
         sample <- realToFrac <$> IOArray.readArray outbufarray i
         pokeElemOff outbufL i sample
         pokeElemOff outbufR i sample
+
+hs_looper_uilog :: StablePtr LooperState -> IO C.CString
+hs_looper_uilog state = wrapErrors "hs_looper_uilog" $ do
+    looperstate <- deRefStablePtr state
+    C.newCString =<< hsLooperUILog looperstate  -- MUST BE free()d BY CLIENT
+
+hsLooperUILog :: LooperState -> IO String
+hsLooperUILog lstate = do 
+    state <- snd <$> readIORef (lsSeqState lstate)
+    maybelines <- forM (Array.assocs (csChannels state)) $ \(i,ch) ->
+        if | Just (j, chstate) <- chActiveSlot ch -> do
+                loopsize <- show <$> Loop.getLoopSize (csLoops state Array.! APC.Coord (i,j))
+                return . Just $ loopsize ++ " " ++ show chstate
+           | otherwise -> return Nothing
+    return . unlines . catMaybes $ maybelines
+
 
 hs_looper_exit :: StablePtr LooperState -> IO ()
 hs_looper_exit state = wrapErrors "hs_looper_exit" $ do

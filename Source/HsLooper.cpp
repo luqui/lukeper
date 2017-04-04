@@ -21,6 +21,7 @@ extern "C" {
         uint32 in_channels,
         uint32 out_channels,
         float** channel_data);
+    char* hs_looper_uilog(void* state);
     void hs_looper_exit(void* state);
 }
 
@@ -43,4 +44,11 @@ HsLooper::~HsLooper() {
 
 void HsLooper::process_samples(uint32 window_size, uint32 in_channels, uint32 out_channels, float** channel_data) {
     hs_looper_main(_state, window_size, in_channels, out_channels, channel_data);
+}
+
+std::string HsLooper::uilog() {
+    char* ret = hs_looper_uilog(_state);
+    std::string ret2(ret);
+    free(ret);
+    return ret2;
 }
