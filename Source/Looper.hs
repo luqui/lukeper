@@ -120,14 +120,20 @@ startLooper = do
             forM_ (reverse queue) activateTransition
         else return ()
 
-        let mix = catMaybes . flip map (Array.assocs (csChannels state)) $ \(i,ch) ->
-                if | Just (j, chstate) <- chActiveSlot ch -> 
-                        Just (csLoops state Array.! APC.Coord (i,j), 1, chstate, pos)
-                   | otherwise -> Nothing
+        -- It is important that renderMix reads the *new* state after running the queue.
+        mix <- renderMix
         lift $ modify (\s -> s { csPosition = csPosition s + winsize })
         return mix
 
     where
+    renderMix = do
+        state <- lift get
+        return $ catMaybes . flip map (Array.assocs (csChannels state)) $ \(i,ch) ->
+                if | Just (j, chstate) <- chActiveSlot ch -> 
+                        Just (csLoops state Array.! APC.Coord (i,j), 1, chstate, csPosition state)
+                   | otherwise -> Nothing
+
+
     tapChannel i j pos = query $ \ch -> 
         if | Just (j', Recording) <- chActiveSlot ch,
              j' == j -> Transition $ const (ch { chActiveSlot = Just (j, Playing pos) }, 
@@ -229,7 +235,9 @@ hsLooperUILog lstate = do
                 loopsize <- show <$> Loop.getLoopSize (csLoops state Array.! APC.Coord (i,j))
                 return . Just $ loopsize ++ " " ++ show chstate
            | otherwise -> return Nothing
-    return . unlines . catMaybes $ maybelines
+    return . unlines $
+        [ "quantization: " ++ show (csQuantization state) ]
+        ++ catMaybes maybelines
 
 
 hs_looper_exit :: StablePtr LooperState -> IO ()
