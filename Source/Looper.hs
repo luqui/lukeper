@@ -51,7 +51,7 @@ data ControlState = ControlState
     , csPosition :: Int
     , csQuantization :: Maybe (Int, Int)   -- period, phase  (i.e. (period*n + phase) is a barline)
     , csLoops :: Array.Array APC.Coord Loop.Loop
-    , csQueue :: [Transition ControlState]  -- reversed
+    , csQueue :: [(Maybe APC.Coord, Transition ControlState)]  -- reversed
     }
 
 data ActiveSlotState = Recording | Playing Int -- int is phase
@@ -99,12 +99,13 @@ startLooper = do
             } 
 
     S.whenever (\e -> snd e == PressDown) $ \(APC.Coord (i,j), _) -> do
-        schedule $ query (\s -> transChannel i (tapChannel i j (csPosition s)))
+        schedule . (Just (APC.Coord (i,j)),) $ query (\s -> transChannel i (tapChannel i j (csPosition s)))
     S.whenever (\e -> snd e == PressLong) $ \(APC.Coord (i,j), _) ->
         activateTransition $ transChannel i . (stopActive i <>) . Transition $ \ch -> 
             (ch { chSlots = chSlots ch Array.// [(j, False)] },
              S.send (APC.Coord (i,j), offColor),
-             liftIO . Loop.clearLoop . (Array.! APC.Coord (i,j)) =<< lift (gets csLoops))
+             do liftIO . Loop.clearLoop . (Array.! APC.Coord (i,j)) =<< lift (gets csLoops)
+                clearQueue (APC.Coord (i,j)))
 
     return $ \winsize -> do
         state <- lift get
@@ -117,7 +118,7 @@ startLooper = do
         if runqueue then do
             let queue = csQueue state
             lift $ modify (\s -> s { csQueue = [] })
-            forM_ (reverse queue) activateTransition
+            forM_ (reverse queue) (activateTransition . snd)
         else return ()
 
         -- It is important that renderMix reads the *new* state after running the queue.
@@ -133,6 +134,8 @@ startLooper = do
                         Just (csLoops state Array.! APC.Coord (i,j), 1, chstate, csPosition state)
                    | otherwise -> Nothing
 
+    clearQueue coord = do
+        lift $ modify (\s -> s { csQueue = filter ((Just coord /=) . fst) (csQueue s) })
 
     tapChannel i j pos = query $ \ch -> 
         if | Just (j', Recording) <- chActiveSlot ch,
