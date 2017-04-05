@@ -39,7 +39,7 @@ foreign export ccall hs_looper_main
 foreign export ccall hs_looper_uilog :: StablePtr LooperState -> IO C.CString
 foreign export ccall hs_looper_exit :: StablePtr LooperState -> IO ()
 
-type ControlIn = (APC.Coord, LongPress)
+type ControlIn = APC.APCOutMessage
 type ControlOut = (APC.Coord, APC.RGBColorState)
 type LooperM = S.SequencerT ControlIn ControlOut (StateT ControlState IO)
 
@@ -52,6 +52,7 @@ data ControlState = ControlState
     , csQuantization :: Maybe (Int, Int)   -- period, phase  (i.e. (period*n + phase) is a barline)
     , csLoops :: Array.Array APC.Coord Loop.Loop
     , csQueue :: [(Maybe APC.Coord, Transition ControlState)]  -- reversed
+    , csLevel :: Double
     }
 
 data ActiveSlotState = Recording | Playing Int -- int is phase
@@ -60,6 +61,7 @@ data ActiveSlotState = Recording | Playing Int -- int is phase
 data Channel = Channel
     { chSlots :: Array.Array Int Bool
     , chActiveSlot :: Maybe (Int, ActiveSlotState)
+    , chLevel :: Double
     }
 
 
@@ -81,6 +83,9 @@ transChannel i (Transition f) = Transition $ \s ->
 query :: (s -> Transition s) -> Transition s
 query f = Transition (\s -> runTransition (f s) s)
 
+matches :: [a] -> Bool
+matches = not . null
+
 startLooper :: LooperM (Int -> LooperM Mix)
 startLooper = do
     -- setup state
@@ -91,21 +96,34 @@ startLooper = do
             { csChannels = Array.listArray (1,8) . replicate 8 $
                 Channel { chSlots = Array.listArray (1,5) . replicate 5 $ False
                         , chActiveSlot = Nothing
+                        , chLevel = 1
                         }
             , csPosition = 0
             , csQuantization = Nothing
             , csLoops = loops
             , csQueue = []
+            , csLevel = 1
             } 
 
-    S.whenever (\e -> snd e == PressDown) $ \(APC.Coord (i,j), _) -> do
+    -- TODO, I think we can use a single MonadPlus for this, e.g.
+    --    APC.MatrixButton coord APC.PressDown <- e
+    --    ...
+    -- and mzero means "doesn't fire"
+    S.whenever (\e -> matches [ () | APC.MatrixButton _ PressDown <- [e] ]) $ \(APC.MatrixButton (APC.Coord (i,j)) _) ->
         schedule . (Just (APC.Coord (i,j)),) $ query (\s -> transChannel i (tapChannel i j (csPosition s)))
-    S.whenever (\e -> snd e == PressLong) $ \(APC.Coord (i,j), _) ->
+    S.whenever (\e -> matches [ () | APC.MatrixButton _ PressLong <- [e] ]) $ \(APC.MatrixButton (APC.Coord (i,j)) _) ->
         activateTransition $ transChannel i . (stopActive i <>) . Transition $ \ch -> 
             (ch { chSlots = chSlots ch Array.// [(j, False)] },
              S.send (APC.Coord (i,j), offColor),
              do liftIO . Loop.clearLoop . (Array.! APC.Coord (i,j)) =<< lift (gets csLoops)
                 clearQueue (APC.Coord (i,j)))
+    S.whenever (\e -> matches [ () | APC.Fader _ _ <- [e] ]) $ \(APC.Fader i level) -> 
+        if | 1 <= i && i <= 8 -> 
+            activateTransition . transChannel i . Transition $ \ch -> (ch { chLevel = level }, return (), return ())
+           | i == 9 ->
+            activateTransition . Transition $ \cs -> (cs { csLevel = level }, return (), return ())
+           | otherwise ->
+            return ()
 
     return $ \winsize -> do
         state <- lift get
@@ -131,7 +149,7 @@ startLooper = do
         state <- lift get
         return $ catMaybes . flip map (Array.assocs (csChannels state)) $ \(i,ch) ->
                 if | Just (j, chstate) <- chActiveSlot ch -> 
-                        Just (csLoops state Array.! APC.Coord (i,j), 1, chstate, csPosition state)
+                        Just (csLoops state Array.! APC.Coord (i,j), csLevel state * chLevel ch, chstate, csPosition state)
                    | otherwise -> Nothing
 
     clearQueue coord = do
