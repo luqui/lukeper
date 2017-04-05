@@ -111,6 +111,22 @@ rgbButton note = Control $ \out -> do
 longRGBButton :: (MonadRefs m, MonadSched m) => Int -> MIDIControl m RGBColorState LongPress
 longRGBButton note = right (longPress 500) . rgbButton note
 
+monoButton :: (Monad m) => Int -> MIDIControl m Bool Bool
+monoButton note = Control $ \out -> do
+    -- reset button
+    out (Left (MIDI.MidiMessage 1 (MIDI.NoteOff note 0)))
+    return $ \case
+        Left (MIDI.MidiMessage _ (MIDI.NoteOn note' vel))
+            | note == note' -> out (Right (vel /= 0))
+        Left (MIDI.MidiMessage _ (MIDI.NoteOff note' _))
+            | note == note' -> out (Right False)
+        Right b ->
+            if b then
+                out (Left (MIDI.MidiMessage 1 (MIDI.NoteOn note 127)))
+            else
+                out (Left (MIDI.MidiMessage 1 (MIDI.NoteOff note 0)))
+        _ -> return ()
+
 -- The whole matrix of buttons as a single Control
 
 newtype Coord = Coord (Int,Int)
@@ -152,11 +168,18 @@ faders = Control $ \out -> do
         _ -> return ()
     
 data APCOutMessage
-    = MatrixButton Coord LongPress
-    | Fader Int Double
+    = OutMatrixButton Coord LongPress
+    | OutFader Int Double
+    | OutMetronome Bool
     deriving (Eq)
 
-apc40Raw :: (MonadRefs m, MonadSched m) => MIDIControl m (Coord, RGBColorState) APCOutMessage
+data APCInMessage
+    = InMatrixButton Coord RGBColorState
+    | InMetronome Bool
+    | InClock
+    deriving (Eq)
+
+apc40Raw :: (MonadRefs m, MonadSched m) => MIDIControl m APCInMessage APCOutMessage
 apc40Raw = Control $ \out -> do
     -- reset device
     out (Left (MIDI.SysEx [
@@ -166,8 +189,11 @@ apc40Raw = Control $ \out -> do
         0x00, -- version low
         0x00  -- version bugfix
         ]))
-    matrixI <- instControl rgbMatrix (out . Arrow.right (uncurry MatrixButton))
-    fadersI <- instControl faders (out . Arrow.right (uncurry Fader))
+    matrixI <- instControl rgbMatrix (out . Arrow.right (uncurry OutMatrixButton))
+    fadersI <- instControl faders (out . Arrow.right (uncurry OutFader))
+    metronomeI <- instControl (monoButton 0x5a) (out . Arrow.right OutMetronome)
     return $ \case 
         Left midi -> matrixI (Left midi) >> fadersI (Left midi)
-        Right msg -> matrixI (Right msg)
+        Right (InMatrixButton coord state) -> matrixI (Right (coord, state))
+        Right (InMetronome b) -> metronomeI (Right b)
+        Right InClock -> out (Left MIDI.SRTClock)

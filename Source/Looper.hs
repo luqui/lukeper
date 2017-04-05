@@ -3,6 +3,7 @@
 module Looper where
 
 import qualified Control.Exception as Exc
+import qualified Control.Monad as M
 import qualified Data.Array as Array
 import qualified Data.Array.IO as IOArray
 import qualified Data.Time.Clock as Clock
@@ -40,7 +41,7 @@ foreign export ccall hs_looper_uilog :: StablePtr LooperState -> IO C.CString
 foreign export ccall hs_looper_exit :: StablePtr LooperState -> IO ()
 
 type ControlIn = APC.APCOutMessage
-type ControlOut = (APC.Coord, APC.RGBColorState)
+type ControlOut = APC.APCInMessage
 type LooperM = S.SequencerT ControlIn ControlOut (StateT ControlState IO)
 
 type Mix = [(Loop.Loop, Double, ActiveSlotState, Int)]
@@ -109,15 +110,15 @@ startLooper = do
     --    APC.MatrixButton coord APC.PressDown <- e
     --    ...
     -- and mzero means "doesn't fire"
-    S.whenever (\e -> matches [ () | APC.MatrixButton _ PressDown <- [e] ]) $ \(APC.MatrixButton (APC.Coord (i,j)) _) ->
+    S.whenever (\e -> matches [ () | APC.OutMatrixButton _ PressDown <- [e] ]) $ \(APC.OutMatrixButton (APC.Coord (i,j)) _) ->
         schedule . (Just (APC.Coord (i,j)),) $ query (\s -> transChannel i (tapChannel i j (csPosition s)))
-    S.whenever (\e -> matches [ () | APC.MatrixButton _ PressLong <- [e] ]) $ \(APC.MatrixButton (APC.Coord (i,j)) _) ->
+    S.whenever (\e -> matches [ () | APC.OutMatrixButton _ PressLong <- [e] ]) $ \(APC.OutMatrixButton (APC.Coord (i,j)) _) ->
         activateTransition $ transChannel i . (stopActive i <>) . Transition $ \ch -> 
             (ch { chSlots = chSlots ch Array.// [(j, False)] },
-             S.send (APC.Coord (i,j), offColor),
+             S.send (APC.InMatrixButton (APC.Coord (i,j)) offColor),
              do liftIO . Loop.clearLoop . (Array.! APC.Coord (i,j)) =<< lift (gets csLoops)
                 clearQueue (APC.Coord (i,j)))
-    S.whenever (\e -> matches [ () | APC.Fader _ _ <- [e] ]) $ \(APC.Fader i level) -> 
+    S.whenever (\e -> matches [ () | APC.OutFader _ _ <- [e] ]) $ \(APC.OutFader i level) -> 
         if | 1 <= i && i <= 8 -> 
             activateTransition . transChannel i . Transition $ \ch -> (ch { chLevel = level }, return (), return ())
            | i == 9 ->
@@ -129,15 +130,27 @@ startLooper = do
         state <- lift get
         let pos = csPosition state
 
-        let runqueue = case csQuantization state of
-                        Nothing -> True
-                        Just (period, phase) -> 
-                            ((pos-phase) `div` period) /= ((pos-phase)-winsize) `div` period
-        if runqueue then do
+        runqueue <- case csQuantization state of
+                        Nothing -> return True
+                        Just (period, phase) -> do
+                            let bar = quantPoint winsize period phase pos
+                            let beat = quantPoint winsize (period `div` 4) phase pos -- TODO more flexible than 4 beats/bar
+                            -- XXX "24 times per quarter note" but subdiv doesn't match, seems to be 12 times 
+                            -- per quarter according to the APC.
+                            let clock = quantPoint winsize (period `div` (2*24)) phase pos
+                            M.when clock $ S.send APC.InClock
+                             
+                            if bar then
+                                S.send (APC.InMetronome True) >> after 200 (S.send (APC.InMetronome False))
+                            else if beat then
+                                S.send (APC.InMetronome True) >> after 100 (S.send (APC.InMetronome False))
+                            else return ()
+
+                            return bar
+        M.when runqueue $ do
             let queue = csQueue state
             lift $ modify (\s -> s { csQueue = [] })
             forM_ (reverse queue) (activateTransition . snd)
-        else return ()
 
         -- It is important that renderMix reads the *new* state after running the queue.
         mix <- renderMix
@@ -145,6 +158,8 @@ startLooper = do
         return mix
 
     where
+    quantPoint winsize period phase pos = ((pos-phase) `div` period) /= ((pos-phase) - winsize) `div` period
+
     renderMix = do
         state <- lift get
         return $ catMaybes . flip map (Array.assocs (csChannels state)) $ \(i,ch) ->
@@ -158,18 +173,18 @@ startLooper = do
     tapChannel i j pos = query $ \ch -> 
         if | Just (j', Recording) <- chActiveSlot ch,
              j' == j -> Transition $ const (ch { chActiveSlot = Just (j, Playing pos) }, 
-                                            S.send (APC.Coord (i,j), playingColor),
+                                            S.send (APC.InMatrixButton (APC.Coord (i,j)) playingColor),
                                             maybeSetQuantization i j)
            | Just (j', Playing _) <- chActiveSlot ch,
              j' == j -> stopActive i
            | chSlots ch Array.! j -> stopActive i <> Transition (const
                      (ch { chActiveSlot = Just (j, Playing pos) },
-                      S.send (APC.Coord (i,j), playingColor),
+                      S.send (APC.InMatrixButton (APC.Coord (i,j)) playingColor),
                       return ()))
            -- not (chSlots ch Array.! j)
            | otherwise -> stopActive i <> Transition (const
                      (ch { chSlots = chSlots ch Array.// [(j, True)], chActiveSlot = Just (j, Recording) },
-                      S.send (APC.Coord (i,j), recordingColor),
+                      S.send (APC.InMatrixButton (APC.Coord (i,j)) recordingColor),
                       return ()))
 
     maybeSetQuantization i j = do
@@ -182,7 +197,7 @@ startLooper = do
             
     stopActive i = Transition $ \ch ->
         if | Just (j, _) <- chActiveSlot ch -> 
-                (ch { chActiveSlot = Nothing }, S.send (APC.Coord (i,j), stoppedColor), return ())
+                (ch { chActiveSlot = Nothing }, S.send (APC.InMatrixButton (APC.Coord (i,j)) stoppedColor), return ())
            | otherwise  -> (ch, return (), return ())
 
     playingColor   = APC.RGBPulsing APC.Subdiv4 (APC.velToRGBColor 22) (APC.velToRGBColor 23)
