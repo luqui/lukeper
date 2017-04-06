@@ -101,6 +101,9 @@ playStretched loop pos mixout outbuf = do
     let grainstart = grainsize * grainix
     let modgrainsize = round (fromIntegral grainsize * loopStretchFactor loop)
     let grainoffset = pos - modgrainsize * grainix
+    -- XXX if we trace this algorithm with loopStretchFactor = 1, we find some discrepancies with the
+    -- xfade terms below.  Removing them makes things smooth in this case, but there are still pops
+    -- when loopStretchFactor is nonzero. 
     let samplei = \i -> 
           -- | loopStretchFactor loop < 1 = \i ->
                 let subgrainsize = round (fromIntegral grainsize * loopStretchFactor loop) in do
