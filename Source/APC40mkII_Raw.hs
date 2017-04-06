@@ -127,6 +127,14 @@ monoButton note = Control $ \out -> do
                 out (Left (MIDI.MidiMessage 1 (MIDI.NoteOff note 0)))
         _ -> return ()
 
+relativeControl :: (Monad m) => Int -> MIDIControl m Void Int
+relativeControl cc = Control $ \out -> do
+    return $ \case
+        Left (MIDI.MidiMessage _ (MIDI.CC cc' val)) | cc == cc' ->
+            if val < 64 then out (Right val)
+                        else out (Right (val-128))
+        _ -> return ()
+
 -- The whole matrix of buttons as a single Control
 
 newtype Coord = Coord (Int,Int)
@@ -171,6 +179,7 @@ data APCOutMessage
     = OutMatrixButton Coord LongPress
     | OutFader Int Double
     | OutMetronome Bool
+    | OutTempoChange Int
     deriving (Eq)
 
 data APCInMessage
@@ -192,8 +201,13 @@ apc40Raw = Control $ \out -> do
     matrixI <- instControl rgbMatrix (out . Arrow.right (uncurry OutMatrixButton))
     fadersI <- instControl faders (out . Arrow.right (uncurry OutFader))
     metronomeI <- instControl (monoButton 0x5a) (out . Arrow.right OutMetronome)
+    tempoI <- instControl (relativeControl 0x0d) (out . Arrow.right OutTempoChange)
     return $ \case 
-        Left midi -> matrixI (Left midi) >> fadersI (Left midi)
+        Left midi -> do
+            matrixI (Left midi)
+            fadersI (Left midi)
+            metronomeI (Left midi)
+            tempoI (Left midi)
         Right (InMatrixButton coord state) -> matrixI (Right (coord, state))
         Right (InMetronome b) -> metronomeI (Right b)
         Right InClock -> out (Left MIDI.SRTClock)

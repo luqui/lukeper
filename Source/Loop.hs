@@ -4,8 +4,8 @@ module Loop
     ( AudioBuffer
     , Loop
     , newLoop
-    , clearLoop
     , getLoopSize
+    , stretch
 
     , play
     , append
@@ -25,7 +25,10 @@ data LoopBuffer = LoopBuffer
     , loopData :: Array.IOUArray Int Double
     }
 
-newtype Loop = Loop (IORef LoopBuffer)
+data Loop = Loop
+    { loopBuffer :: IORef LoopBuffer
+    , loopStretchFactor :: Double
+    }
 
 newLoopBuffer :: IO LoopBuffer
 newLoopBuffer = do
@@ -34,14 +37,13 @@ newLoopBuffer = do
     
 newLoop :: IO Loop
 newLoop = do
-    fmap Loop . newIORef =<< newLoopBuffer
-
--- Move to purer implementation
-clearLoop :: Loop -> IO ()
-clearLoop (Loop loopbufref) = writeIORef loopbufref =<< newLoopBuffer
+    buf <- newIORef =<< newLoopBuffer
+    return $ Loop { loopBuffer = buf, loopStretchFactor = 1 }
 
 getLoopSize :: Loop -> IO Int
-getLoopSize (Loop loopbufref) = loopSize <$> readIORef loopbufref
+getLoopSize loop = do
+    basesize <- loopSize <$> readIORef (loopBuffer loop)
+    return $ floor (fromIntegral basesize * loopStretchFactor loop)
 
 ensureBuffer :: IORef LoopBuffer -> IO LoopBuffer
 ensureBuffer loopbufref = do
@@ -52,12 +54,16 @@ ensureBuffer loopbufref = do
         writeIORef loopbufref (loopbuf { loopData = loopdata' })
     readIORef loopbufref
 
+stretch :: Double -> Loop -> Loop
+stretch factor loop = loop { loopStretchFactor = loopStretchFactor loop * factor }
+
 -- NB. disregards position, assumes append at end of buffer.
 -- Quite tricky to get "insert" which is I think what it should do
 -- to respect pos.
+-- TODO also disrespects loopStretchFactor.
 append :: Loop -> Int -> Array.IOUArray Int Double -> IO ()
-append (Loop loopbufref) _ inbuf = do
-    loopbuf <- ensureBuffer loopbufref
+append loop _ inbuf = do
+    loopbuf <- ensureBuffer (loopBuffer loop)
     bufsize <- getSize inbuf
     loopbufsize <- getSize (loopData loopbuf)
     -- NB. reallocates at most once.  *Should* be enough but not technically correct.
@@ -66,20 +72,21 @@ append (Loop loopbufref) _ inbuf = do
                     else return (loopData loopbuf)
     forM_ [0..bufsize-1] $ \i -> do
         Array.writeArray loopdata' (loopSize loopbuf + i) =<< Array.readArray inbuf i
-    writeIORef loopbufref $  
+    writeIORef (loopBuffer loop) $  
         loopbuf { loopSize = loopSize loopbuf + bufsize
                 , loopData = loopdata'
                 }
 
 play :: Loop -> Int -> Double -> Array.IOUArray Int Double -> IO ()
-play (Loop loopbufref) pos mixout outbuf = do
-    loopbuf <- readIORef loopbufref
+play loop pos mixout outbuf = do
+    loopbuf <- readIORef (loopBuffer loop)
     loopsize <- getSize (loopData loopbuf)
+    let pos' = floor (fromIntegral pos / loopStretchFactor loop)
     when (loopsize /= 0) $ do
         bufsize <- getSize outbuf
         forM_ [0..bufsize-1] $ \i -> do
             cur <- Array.readArray outbuf i
-            samp <- Array.readArray (loopData loopbuf) ((pos + i) `mod` loopSize loopbuf)
+            samp <- Array.readArray (loopData loopbuf) ((pos' + i) `mod` loopSize loopbuf)
             Array.writeArray outbuf i (cur + mixout*samp)
 
 

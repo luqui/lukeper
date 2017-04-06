@@ -10,6 +10,7 @@ import qualified Data.Time.Clock as Clock
 import qualified Foreign.Ptr as Foreign
 import qualified System.IO as IO
 
+import Control.Arrow (second)
 import Control.Monad (forM, forM_)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Class (lift)
@@ -58,6 +59,23 @@ data ControlState = ControlState
 
 data ActiveSlotState = Recording | Playing Int -- int is phase
     deriving (Eq, Show)
+
+stretchActiveSlot :: Double -> Int -> ActiveSlotState -> ActiveSlotState
+stretchActiveSlot stretch pos (Playing phase) = Playing (stretchPhase stretch pos phase)
+stretchActiveSlot _ _ a = a
+
+-- g x = f (x / s)
+-- 
+-- f (pos - phase) = g (pos - phase')
+--                 = f ((pos - phase') / s)
+-- pos - phase = (pos - phase')/s
+-- pos - phase = pos/s - phase'/s
+-- phase'/s = pos/s - pos + phase
+-- phase' = s(pos/s - pos + phase)
+--        = pos - pos*s + phase*s
+--        = pos*(1-s) + phase*s
+stretchPhase :: Double -> Int -> Int -> Int
+stretchPhase stretch pos phase = round (fromIntegral pos * (1 - stretch) + fromIntegral phase * stretch)
 
 data Channel = Channel
     { chSlots :: Array.Array Int Bool
@@ -116,7 +134,7 @@ startLooper = do
         activateTransition $ transChannel i . (stopActive i <>) . Transition $ \ch -> 
             (ch { chSlots = chSlots ch Array.// [(j, False)] },
              S.send (APC.InMatrixButton (APC.Coord (i,j)) offColor),
-             do liftIO . Loop.clearLoop . (Array.! APC.Coord (i,j)) =<< lift (gets csLoops)
+             do freshLoop i j
                 clearQueue (APC.Coord (i,j)))
     S.whenever (\e -> matches [ () | APC.OutFader _ _ <- [e] ]) $ \(APC.OutFader i level) -> 
         if | 1 <= i && i <= 8 -> 
@@ -125,6 +143,16 @@ startLooper = do
             activateTransition . Transition $ \cs -> (cs { csLevel = level }, return (), return ())
            | otherwise ->
             return ()
+    S.whenever (\e -> matches [ () | APC.OutTempoChange _ <- [e] ]) $ \(APC.OutTempoChange dt) ->  do
+        pos <- lift $ gets csPosition
+        activateTransition . Transition $ \s ->
+            let stretch = 100 / (100 + fromIntegral dt) in
+            (s { csLoops = fmap (Loop.stretch stretch) (csLoops s)
+               , csQuantization = fmap (\(period, phase) -> 
+                    (round (fromIntegral period * stretch), stretchPhase stretch pos phase)) (csQuantization s)
+               , csChannels = fmap (\ch -> ch { chActiveSlot = (fmap.second) (stretchActiveSlot stretch pos) (chActiveSlot ch) }) (csChannels s)
+               }
+            , return (), return ())
 
     return $ \winsize -> do
         state <- lift get
@@ -160,6 +188,10 @@ startLooper = do
     where
     quantPoint winsize period phase pos = ((pos-phase) `div` period) /= ((pos-phase) - winsize) `div` period
 
+    freshLoop i j = do
+        fresh <- liftIO Loop.newLoop
+        lift $ modify (\s -> s { csLoops = csLoops s Array.// [(APC.Coord (i,j), fresh)] })
+
     renderMix = do
         state <- lift get
         return $ catMaybes . flip map (Array.assocs (csChannels state)) $ \(i,ch) ->
@@ -174,7 +206,7 @@ startLooper = do
         if | Just (j', Recording) <- chActiveSlot ch,
              j' == j -> Transition $ const (ch { chActiveSlot = Just (j, Playing pos) }, 
                                             S.send (APC.InMatrixButton (APC.Coord (i,j)) playingColor),
-                                            maybeSetQuantization i j)
+                                            do maybeSetQuantization i j)
            | Just (j', Playing _) <- chActiveSlot ch,
              j' == j -> stopActive i
            | chSlots ch Array.! j -> stopActive i <> Transition (const
@@ -185,7 +217,7 @@ startLooper = do
            | otherwise -> stopActive i <> Transition (const
                      (ch { chSlots = chSlots ch Array.// [(j, True)], chActiveSlot = Just (j, Recording) },
                       S.send (APC.InMatrixButton (APC.Coord (i,j)) recordingColor),
-                      return ()))
+                      freshLoop i j))
 
     maybeSetQuantization i j = do
         state <- lift get
