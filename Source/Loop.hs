@@ -101,27 +101,17 @@ playStretched loop pos mixout outbuf = do
     let grainstart = grainsize * grainix
     let modgrainsize = round (fromIntegral grainsize * loopStretchFactor loop)
     let grainoffset = pos - modgrainsize * grainix
-    -- XXX if we trace this algorithm with loopStretchFactor = 1, we find some discrepancies with the
-    -- xfade terms below.  Removing them makes things smooth in this case, but there are still pops
-    -- when loopStretchFactor is nonzero. 
     let samplei = \i -> 
           -- | loopStretchFactor loop < 1 = \i ->
                 let subgrainsize = round (fromIntegral grainsize * loopStretchFactor loop) in do
                 thissample <- Array.readArray (loopData loopbuf) ((grainstart + grainoffset + i) `mod` loopSize loopbuf)
                 if | grainoffset + i < xfade -> do
                     prevsample <- Array.readArray (loopData loopbuf) 
-                                ((grainstart - grainsize + subgrainsize - xfade + grainoffset + i) `mod` loopSize loopbuf)
-                            --   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^           ^^^^^^^^^^^^^^^^
-                            --         end of prev grain                       how far into this grain
+                                ((grainstart - grainsize + subgrainsize + grainoffset + i) `mod` loopSize loopbuf)
+                            --   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^   ^^^^^^^^^^^^^^^^
+                            --         end of prev grain                 how far into this grain
                     let delta = fromIntegral (grainoffset + i) / fromIntegral xfade
                     return $ thissample * delta + prevsample * (1 - delta)
-                   | subgrainsize - (grainoffset + i) < xfade -> do
-                    nextsample <- Array.readArray (loopData loopbuf)
-                                ((grainstart + grainsize + grainoffset + i - (subgrainsize - xfade)) `mod` loopSize loopbuf)
-                            --   ^^^^^^^^^^^^^^^^^^^^^^^   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-                            --      start of next grain       distance from xfade point
-                    let delta = fromIntegral (grainoffset + i - (subgrainsize - xfade)) / fromIntegral xfade
-                    return $ thissample * (1-delta) + nextsample * delta
                    | otherwise -> Array.readArray (loopData loopbuf) ((grainstart + grainoffset + i) `mod` loopSize loopbuf)
     loopbufsize <- getSize (loopData loopbuf)
     when (loopbufsize /= 0) $ do
