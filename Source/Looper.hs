@@ -81,6 +81,7 @@ data Channel = Channel
     { chSlots :: Array.Array Int Bool
     , chActiveSlot :: Maybe (Int, ActiveSlotState)
     , chLevel :: Double
+    , chMute  :: Bool
     }
 
 
@@ -121,6 +122,7 @@ startLooper = do
                 Channel { chSlots = Array.listArray (1,5) . replicate 5 $ False
                         , chActiveSlot = Nothing
                         , chLevel = 1
+                        , chMute = False
                         }
             , csPosition = 0
             , csQuantization = Nothing
@@ -158,6 +160,11 @@ startLooper = do
                , csChannels = fmap (\ch -> ch { chActiveSlot = (fmap.second) (stretchActiveSlot stretch pos) (chActiveSlot ch) }) (csChannels s)
                }
             , return (), return ())
+    S.whenever (\e -> matches [ () | APC.OutUnmuteButton _ True <- [e] ]) $ \(APC.OutUnmuteButton ch _) -> do
+        activateTransition . transChannel ch . Transition $ \s ->
+            (s { chMute = not (chMute s) },
+             S.send (APC.InUnmuteButton ch (chMute s)),
+             return ())
     S.when (\e -> matches [ () | APC.OutSessionButton True <- [e] ]) $ \_ -> do
         -- XXX hack -- we can't reboot in the middle of a conditional event handler,
         -- because of the way Sequencer.processEvents works. It will not correctly
@@ -223,7 +230,8 @@ renderMix :: LooperM Mix
 renderMix = do
     state <- lift get
     return $ catMaybes . flip map (Array.assocs (csChannels state)) $ \(i,ch) ->
-            if | Just (j, chstate) <- chActiveSlot ch -> 
+            if | Just (j, chstate) <- chActiveSlot ch
+                 , not (chMute ch) -> 
                     Just (csLoops state Array.! APC.Coord (i,j), csLevel state * chLevel ch, chstate, csPosition state)
                | otherwise -> Nothing
 

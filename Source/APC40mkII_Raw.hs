@@ -44,6 +44,8 @@ module APC40mkII_Raw where
 import Prelude hiding ((.), id)
 import Control.Category
 
+import Control.Monad (forM_)
+
 import qualified Control.Arrow as Arrow
 import qualified Data.Array as Array
 import qualified System.MIDI.Base as MIDI
@@ -111,21 +113,30 @@ rgbButton note = Control $ \out -> do
 longRGBButton :: (MonadRefs m, MonadSched m) => Int -> MIDIControl m RGBColorState LongPress
 longRGBButton note = right (longPress 500) . rgbButton note
 
-monoButton :: (Monad m) => Int -> MIDIControl m Bool Bool
-monoButton note = Control $ \out -> do
+monoButton :: (Monad m) => Int -> Bool -> MIDIControl m Bool Bool
+monoButton note val0 = Control $ \out -> do
+    let inproc (Left (MIDI.MidiMessage _ (MIDI.NoteOn note' vel)))
+            | note == note'  = out (Right (vel /= 0))
+        inproc (Left (MIDI.MidiMessage _ (MIDI.NoteOff note' _)))
+            | note == note'  = out (Right False)
+        inproc (Right True)  = out (Left (MIDI.MidiMessage 1 (MIDI.NoteOn note 127)))
+        inproc (Right False) = out (Left (MIDI.MidiMessage 1 (MIDI.NoteOff note 0)))
+        inproc _ = return ()
     -- reset button
-    out (Left (MIDI.MidiMessage 1 (MIDI.NoteOff note 0)))
-    return $ \case
-        Left (MIDI.MidiMessage _ (MIDI.NoteOn note' vel))
-            | note == note' -> out (Right (vel /= 0))
-        Left (MIDI.MidiMessage _ (MIDI.NoteOff note' _))
-            | note == note' -> out (Right False)
-        Right b ->
-            if b then
-                out (Left (MIDI.MidiMessage 1 (MIDI.NoteOn note 127)))
-            else
-                out (Left (MIDI.MidiMessage 1 (MIDI.NoteOff note 0)))
-        _ -> return ()
+    inproc (Right val0)
+    return inproc
+
+channelMonoButton :: (Monad m) => Int -> Bool -> MIDIControl m (Int,Bool) (Int,Bool)
+channelMonoButton note val0 = Control $ \out -> do
+    let inproc (Left (MIDI.MidiMessage ch (MIDI.NoteOn note' vel)))
+            | note == note'       = out (Right (ch, vel /= 0))
+        inproc (Left (MIDI.MidiMessage ch (MIDI.NoteOff note' _)))
+            | note == note'       = out (Right (ch, False))
+        inproc (Right (ch,True))  = out (Left (MIDI.MidiMessage ch (MIDI.NoteOn note 127)))
+        inproc (Right (ch,False)) = out (Left (MIDI.MidiMessage ch (MIDI.NoteOff note 0)))
+        inproc _ = return ()
+    forM_ [1..8] $ \ch -> inproc (Right (ch, val0))
+    return inproc
 
 relativeControl :: (Monad m) => Int -> MIDIControl m Void Int
 relativeControl cc = Control $ \out -> do
@@ -181,12 +192,14 @@ data APCOutMessage
     | OutTempoChange Int
     | OutMetronome Bool
     | OutSessionButton Bool
+    | OutUnmuteButton Int Bool
     deriving (Eq)
 
 data APCInMessage
     = InMatrixButton Coord RGBColorState
     | InMetronome Bool
     | InSessionButton Bool
+    | InUnmuteButton Int Bool
     | InClock
     deriving (Eq)
 
@@ -203,8 +216,9 @@ apc40Raw = Control $ \out -> do
     matrixI <- instControl rgbMatrix (out . Arrow.right (uncurry OutMatrixButton))
     fadersI <- instControl faders (out . Arrow.right (uncurry OutFader))
     tempoI <- instControl (relativeControl 0x0d) (out . Arrow.right OutTempoChange)
-    metronomeI <- instControl (monoButton 0x5a) (out . Arrow.right OutMetronome)
-    sessionI <- instControl (monoButton 0x66) (out . Arrow.right OutSessionButton)
+    metronomeI <- instControl (monoButton 0x5a False) (out . Arrow.right OutMetronome)
+    sessionI <- instControl (monoButton 0x66 False) (out . Arrow.right OutSessionButton)
+    unmuteI <- instControl (channelMonoButton 0x32 True) (out . Arrow.right (uncurry OutUnmuteButton))
     return $ \case 
         Left midi -> do
             matrixI (Left midi)
@@ -212,7 +226,9 @@ apc40Raw = Control $ \out -> do
             tempoI (Left midi)
             metronomeI (Left midi)
             sessionI (Left midi)
+            unmuteI (Left midi)
         Right (InMatrixButton coord state) -> matrixI (Right (coord, state))
         Right (InMetronome b) -> metronomeI (Right b)
         Right (InSessionButton b) -> sessionI (Right b)
+        Right (InUnmuteButton ch b) -> unmuteI (Right (ch,b))
         Right InClock -> out (Left MIDI.SRTClock)
