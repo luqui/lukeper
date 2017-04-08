@@ -223,11 +223,11 @@ setQuantization :: Int -> LooperM ()
 setQuantization cycleLength =
     lift $ modify (\s -> s { csQuantization = Just (qlength, csPosition s) })
     where
-    -- If we have long loops, divide them in half until the tempo is reasonable,
-    -- so we don't have to wait for a long time until we can change things. 
-    -- Should work for most types of music.
-    qlength = until (<= maxLength) (`div` 2) cycleLength
-    maxLength = 44100*4  -- 4 seconds  (60bpm)
+    -- If we have long loops, half/double until the tempo is reasonable.
+    -- This should work for most types of music.
+    qlength = until (>= minlength) (* 2) . until (<= maxlength) (`div` 2) $ cycleLength
+    maxlength = 44100*4  -- 4 seconds  (60bpm)
+    minlength = 44100    -- 1 second  (240bpm)
 
 stopActive :: Int -> Transition Channel
 stopActive i = Transition $ \ch ->
