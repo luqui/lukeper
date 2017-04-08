@@ -178,13 +178,15 @@ faders = Control $ \out -> do
 data APCOutMessage
     = OutMatrixButton Coord LongPress
     | OutFader Int Double
-    | OutMetronome Bool
     | OutTempoChange Int
+    | OutMetronome Bool
+    | OutSessionButton Bool
     deriving (Eq)
 
 data APCInMessage
     = InMatrixButton Coord RGBColorState
     | InMetronome Bool
+    | InSessionButton Bool
     | InClock
     deriving (Eq)
 
@@ -200,14 +202,17 @@ apc40Raw = Control $ \out -> do
         ]))
     matrixI <- instControl rgbMatrix (out . Arrow.right (uncurry OutMatrixButton))
     fadersI <- instControl faders (out . Arrow.right (uncurry OutFader))
-    metronomeI <- instControl (monoButton 0x5a) (out . Arrow.right OutMetronome)
     tempoI <- instControl (relativeControl 0x0d) (out . Arrow.right OutTempoChange)
+    metronomeI <- instControl (monoButton 0x5a) (out . Arrow.right OutMetronome)
+    sessionI <- instControl (monoButton 0x66) (out . Arrow.right OutSessionButton)
     return $ \case 
         Left midi -> do
             matrixI (Left midi)
             fadersI (Left midi)
-            metronomeI (Left midi)
             tempoI (Left midi)
+            metronomeI (Left midi)
+            sessionI (Left midi)
         Right (InMatrixButton coord state) -> matrixI (Right (coord, state))
         Right (InMetronome b) -> metronomeI (Right b)
+        Right (InSessionButton b) -> sessionI (Right b)
         Right InClock -> out (Left MIDI.SRTClock)

@@ -110,7 +110,7 @@ query f = Transition (\s -> runTransition (f s) s)
 matches :: [a] -> Bool
 matches = not . null
 
-startLooper :: LooperM (Int -> LooperM Mix)
+startLooper :: LooperM ()
 startLooper = do
     -- setup state
     lift $ do
@@ -151,15 +151,21 @@ startLooper = do
     S.whenever (\e -> matches [ () | APC.OutTempoChange _ <- [e] ]) $ \(APC.OutTempoChange dt) ->  do
         pos <- lift $ gets csPosition
         activateTransition . Transition $ \s ->
-            let stretch = 100 / (100 + fromIntegral dt) in
+            let stretch = 1.01^^dt in
             (s { csLoops = fmap (Loop.stretch stretch) (csLoops s)
                , csQuantization = fmap (\(period, phase) -> 
                     (round (fromIntegral period * stretch), stretchPhase stretch pos phase)) (csQuantization s)
                , csChannels = fmap (\ch -> ch { chActiveSlot = (fmap.second) (stretchActiveSlot stretch pos) (chActiveSlot ch) }) (csChannels s)
                }
             , return (), return ())
-
-    return runLooper
+    S.when (\e -> matches [ () | APC.OutSessionButton True <- [e] ]) $ \_ -> do
+        -- XXX hack -- we can't reboot in the middle of a conditional event handler,
+        -- because of the way Sequencer.processEvents works. It will not correctly
+        -- clear conditional events.  So we use S.after 0 to convert into a timed
+        -- event, which works correctly.
+        after 0 $ do
+            S.rebootSequencerT APC.apc40Raw
+            startLooper
 
 freshLoop :: Int -> Int -> LooperM ()
 freshLoop i j = do
@@ -227,22 +233,22 @@ runLooper winsize = do
     let pos = csPosition state
 
     runqueue <- case csQuantization state of
-                    Nothing -> return True
-                    Just (period, phase) -> do
-                        let bar = quantPoint period phase pos
-                        let beat = quantPoint (period `div` 4) phase pos -- TODO more flexible than 4 beats/bar
-                        -- XXX "24 times per quarter note" but subdiv doesn't match, seems to be 12 times 
-                        -- per quarter according to the APC.
-                        let clock = quantPoint (period `div` (2*24)) phase pos
-                        M.when clock $ S.send APC.InClock
-                         
-                        if bar then
-                            S.send (APC.InMetronome True) >> after 200 (S.send (APC.InMetronome False))
-                        else if beat then
-                            S.send (APC.InMetronome True) >> after 100 (S.send (APC.InMetronome False))
-                        else return ()
+        Nothing -> return True
+        Just (period, phase) -> do
+            let bar = quantPoint period phase pos
+            let beat = quantPoint (period `div` 4) phase pos -- TODO more flexible than 4 beats/bar
+            -- XXX "24 times per quarter note" but subdiv doesn't match, seems to be 12 times 
+            -- per quarter according to the APC.
+            let clock = quantPoint (period `div` (2*24)) phase pos
+            M.when clock $ S.send APC.InClock
+             
+            if bar then
+                S.send (APC.InMetronome True) >> after 200 (S.send (APC.InMetronome False))
+            else if beat then
+                S.send (APC.InMetronome True) >> after 100 (S.send (APC.InMetronome False))
+            else return ()
 
-                        return bar
+            return bar
     M.when runqueue $ do
         let queue = csQueue state
         lift $ modify (\s -> s { csQueue = [] })
@@ -266,10 +272,10 @@ data LooperState = LooperState
 hs_looper_init :: IO (StablePtr LooperState)
 hs_looper_init = wrapErrors "hs_looper_init" $ do
     devs <- openDevs
-    ((frame, seqstate), superstate) <- runStateT (S.runSequencerT startLooper =<< S.bootSequencerT devs APC.apc40Raw) (error "first order of business must be to set state")
+    (((), seqstate), superstate) <- runStateT (S.runSequencerT startLooper =<< S.bootSequencerT devs APC.apc40Raw) (error "first order of business must be to set state")
     seqstateref <- newIORef (seqstate, superstate)
     newStablePtr $ LooperState { lsMidiDevs = devs
-                               , lsFrame = frame
+                               , lsFrame = runLooper
                                , lsSeqState = seqstateref
                                }
 

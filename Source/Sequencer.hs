@@ -42,8 +42,6 @@ instance Monad m => MonadSched (SequencerT i o m) where
     now = SequencerT $ gets seqCurrentTime
     at time action = SequencerT $
         modify $ \s -> s { seqTimedEvents = Map.insertWith (>>) time action (seqTimedEvents s) }
-
-
     
 
 runSequencerT :: SequencerT i o m a 
@@ -65,10 +63,21 @@ bootSequencerT devs ctrl = do
             , seqCondEvents = Seq.empty
             , seqCurrentTime = time0
             }
-    (sendO,state1) <- flip runSequencerT state0 . instControl ctrl $ \case
+    ((), state1) <- runSequencerT (rebootSequencerT ctrl) state0
+    return state1
+
+rebootSequencerT :: (MonadIO m) => MIDIControl (SequencerT i o m) o i -> SequencerT i o m ()
+rebootSequencerT ctrl = SequencerT $ do
+    devs <- gets seqMidiDevs
+    modify (\s -> s
+        { seqController = either (liftIO . sendMIDI (snd devs)) (const (return ()))
+        , seqTimedEvents = Map.empty
+        , seqCondEvents = Seq.empty })
+    sendO <- getSequencerT . instControl ctrl $ \case
         Left midiEvent -> liftIO (sendMIDI (snd devs) midiEvent)
         Right i -> processEvent i
-    return $ state1 { seqController = sendO }
+    modify (\s -> s { seqController = sendO })
+    
 
 sendMIDI :: MIDI.Connection -> MIDI.MidiMessage -> IO ()
 -- Why exactly does hmidi reject sysex sends and require a special method?
