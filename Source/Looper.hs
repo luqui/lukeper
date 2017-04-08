@@ -204,11 +204,20 @@ tapChannel i j pos = query $ \ch ->
 maybeSetQuantization :: Int -> Int -> LooperM ()
 maybeSetQuantization i j = do
     state <- lift get
-    if isNothing (csQuantization state) then do
+    M.when (isNothing (csQuantization state)) $ do
         let loop = csLoops state Array.! APC.Coord (i,j)
         loopsize <- liftIO $ Loop.getLoopSize loop
-        lift $ modify (\s -> s { csQuantization = Just (loopsize, csPosition state) })
-    else return ()
+        setQuantization loopsize
+
+setQuantization :: Int -> LooperM ()
+setQuantization cycleLength =
+    lift $ modify (\s -> s { csQuantization = Just (qlength, csPosition s) })
+    where
+    -- If we have long loops, divide them in half until the tempo is reasonable,
+    -- so we don't have to wait for a long time until we can change things. 
+    -- Should work for most types of music.
+    qlength = until (<= maxLength) (`div` 2) cycleLength
+    maxLength = 44100*4  -- 4 seconds  (60bpm)
 
 stopActive :: Int -> Transition Channel
 stopActive i = Transition $ \ch ->
