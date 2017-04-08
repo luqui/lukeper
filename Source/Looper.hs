@@ -93,6 +93,11 @@ instance Monoid (Transition s) where
             (t'', c', a') = g t'
         in (t'', c >> c', a >> a')
 
+playingColor,recordingColor,stoppedColor,offColor :: APC.RGBColorState 
+playingColor   = APC.RGBPulsing APC.Subdiv4 (APC.velToRGBColor 22) (APC.velToRGBColor 23)
+recordingColor = APC.RGBPulsing APC.Subdiv4 (APC.velToRGBColor 6) (APC.velToRGBColor 7)
+stoppedColor   = APC.RGBSolid (APC.velToRGBColor 14)
+offColor       = APC.RGBOff
 
 transChannel :: Int -> Transition Channel -> Transition ControlState
 transChannel i (Transition f) = Transition $ \s -> 
@@ -154,96 +159,103 @@ startLooper = do
                }
             , return (), return ())
 
-    return $ \winsize -> do
-        state <- lift get
-        let pos = csPosition state
+    return runLooper
 
-        runqueue <- case csQuantization state of
-                        Nothing -> return True
-                        Just (period, phase) -> do
-                            let bar = quantPoint winsize period phase pos
-                            let beat = quantPoint winsize (period `div` 4) phase pos -- TODO more flexible than 4 beats/bar
-                            -- XXX "24 times per quarter note" but subdiv doesn't match, seems to be 12 times 
-                            -- per quarter according to the APC.
-                            let clock = quantPoint winsize (period `div` (2*24)) phase pos
-                            M.when clock $ S.send APC.InClock
-                             
-                            if bar then
-                                S.send (APC.InMetronome True) >> after 200 (S.send (APC.InMetronome False))
-                            else if beat then
-                                S.send (APC.InMetronome True) >> after 100 (S.send (APC.InMetronome False))
-                            else return ()
+freshLoop :: Int -> Int -> LooperM ()
+freshLoop i j = do
+    fresh <- liftIO Loop.newLoop
+    lift $ modify (\s -> s { csLoops = csLoops s Array.// [(APC.Coord (i,j), fresh)] })
 
-                            return bar
-        M.when runqueue $ do
-            let queue = csQueue state
-            lift $ modify (\s -> s { csQueue = [] })
-            forM_ (reverse queue) (activateTransition . snd)
+clearQueue :: APC.Coord -> LooperM ()
+clearQueue coord = do
+    lift $ modify (\s -> s { csQueue = filter ((Just coord /=) . fst) (csQueue s) })
 
-        -- It is important that renderMix reads the *new* state after running the queue.
-        mix <- renderMix
-        lift $ modify (\s -> s { csPosition = csPosition s + winsize })
-        return mix
+tapChannel :: Int -> Int -> Int -> Transition Channel
+tapChannel i j pos = query $ \ch -> 
+    if | Just (j', Recording) <- chActiveSlot ch,
+         j' == j -> Transition $ const (ch { chActiveSlot = Just (j, Playing pos) }, 
+                                        S.send (APC.InMatrixButton (APC.Coord (i,j)) playingColor),
+                                        do maybeSetQuantization i j)
+       | Just (j', Playing _) <- chActiveSlot ch,
+         j' == j -> stopActive i
+       | chSlots ch Array.! j -> stopActive i <> Transition (const
+                 (ch { chActiveSlot = Just (j, Playing pos) },
+                  S.send (APC.InMatrixButton (APC.Coord (i,j)) playingColor),
+                  return ()))
+       -- not (chSlots ch Array.! j)
+       | otherwise -> stopActive i <> Transition (const
+                 (ch { chSlots = chSlots ch Array.// [(j, True)], chActiveSlot = Just (j, Recording) },
+                  S.send (APC.InMatrixButton (APC.Coord (i,j)) recordingColor),
+                  freshLoop i j))
+
+maybeSetQuantization :: Int -> Int -> LooperM ()
+maybeSetQuantization i j = do
+    state <- lift get
+    if isNothing (csQuantization state) then do
+        let loop = csLoops state Array.! APC.Coord (i,j)
+        loopsize <- liftIO $ Loop.getLoopSize loop
+        lift $ modify (\s -> s { csQuantization = Just (loopsize, csPosition state) })
+    else return ()
+
+stopActive :: Int -> Transition Channel
+stopActive i = Transition $ \ch ->
+    if | Just (j, _) <- chActiveSlot ch -> 
+            (ch { chActiveSlot = Nothing }, S.send (APC.InMatrixButton (APC.Coord (i,j)) stoppedColor), return ())
+       | otherwise  -> (ch, return (), return ())
+
+schedule :: (Maybe APC.Coord, Transition ControlState) -> LooperM ()
+schedule t = lift $ modify (\s -> s { csQueue = t : csQueue s })
+
+activateTransition :: Transition ControlState -> LooperM ()
+activateTransition t = do
+    (state', lights, action) <- runTransition t <$> lift get
+    lift $ put state'
+    lights
+    action
+
+renderMix :: LooperM Mix
+renderMix = do
+    state <- lift get
+    return $ catMaybes . flip map (Array.assocs (csChannels state)) $ \(i,ch) ->
+            if | Just (j, chstate) <- chActiveSlot ch -> 
+                    Just (csLoops state Array.! APC.Coord (i,j), csLevel state * chLevel ch, chstate, csPosition state)
+               | otherwise -> Nothing
+
+runLooper :: Int -> LooperM Mix
+runLooper winsize = do
+    state <- lift get
+    let pos = csPosition state
+
+    runqueue <- case csQuantization state of
+                    Nothing -> return True
+                    Just (period, phase) -> do
+                        let bar = quantPoint period phase pos
+                        let beat = quantPoint (period `div` 4) phase pos -- TODO more flexible than 4 beats/bar
+                        -- XXX "24 times per quarter note" but subdiv doesn't match, seems to be 12 times 
+                        -- per quarter according to the APC.
+                        let clock = quantPoint (period `div` (2*24)) phase pos
+                        M.when clock $ S.send APC.InClock
+                         
+                        if bar then
+                            S.send (APC.InMetronome True) >> after 200 (S.send (APC.InMetronome False))
+                        else if beat then
+                            S.send (APC.InMetronome True) >> after 100 (S.send (APC.InMetronome False))
+                        else return ()
+
+                        return bar
+    M.when runqueue $ do
+        let queue = csQueue state
+        lift $ modify (\s -> s { csQueue = [] })
+        forM_ (reverse queue) (activateTransition . snd)
+
+    -- It is important that renderMix reads the *new* state after running the queue.
+    mix <- renderMix
+    lift $ modify (\s -> s { csPosition = csPosition s + winsize })
+    return mix
 
     where
-    quantPoint winsize period phase pos = ((pos-phase) `div` period) /= ((pos-phase) - winsize) `div` period
+    quantPoint period phase pos = ((pos-phase) `div` period) /= ((pos-phase) - winsize) `div` period
 
-    freshLoop i j = do
-        fresh <- liftIO Loop.newLoop
-        lift $ modify (\s -> s { csLoops = csLoops s Array.// [(APC.Coord (i,j), fresh)] })
-
-    renderMix = do
-        state <- lift get
-        return $ catMaybes . flip map (Array.assocs (csChannels state)) $ \(i,ch) ->
-                if | Just (j, chstate) <- chActiveSlot ch -> 
-                        Just (csLoops state Array.! APC.Coord (i,j), csLevel state * chLevel ch, chstate, csPosition state)
-                   | otherwise -> Nothing
-
-    clearQueue coord = do
-        lift $ modify (\s -> s { csQueue = filter ((Just coord /=) . fst) (csQueue s) })
-
-    tapChannel i j pos = query $ \ch -> 
-        if | Just (j', Recording) <- chActiveSlot ch,
-             j' == j -> Transition $ const (ch { chActiveSlot = Just (j, Playing pos) }, 
-                                            S.send (APC.InMatrixButton (APC.Coord (i,j)) playingColor),
-                                            do maybeSetQuantization i j)
-           | Just (j', Playing _) <- chActiveSlot ch,
-             j' == j -> stopActive i
-           | chSlots ch Array.! j -> stopActive i <> Transition (const
-                     (ch { chActiveSlot = Just (j, Playing pos) },
-                      S.send (APC.InMatrixButton (APC.Coord (i,j)) playingColor),
-                      return ()))
-           -- not (chSlots ch Array.! j)
-           | otherwise -> stopActive i <> Transition (const
-                     (ch { chSlots = chSlots ch Array.// [(j, True)], chActiveSlot = Just (j, Recording) },
-                      S.send (APC.InMatrixButton (APC.Coord (i,j)) recordingColor),
-                      freshLoop i j))
-
-    maybeSetQuantization i j = do
-        state <- lift get
-        if isNothing (csQuantization state) then do
-            let loop = csLoops state Array.! APC.Coord (i,j)
-            loopsize <- liftIO $ Loop.getLoopSize loop
-            lift $ modify (\s -> s { csQuantization = Just (loopsize, csPosition state) })
-        else return ()
-            
-    stopActive i = Transition $ \ch ->
-        if | Just (j, _) <- chActiveSlot ch -> 
-                (ch { chActiveSlot = Nothing }, S.send (APC.InMatrixButton (APC.Coord (i,j)) stoppedColor), return ())
-           | otherwise  -> (ch, return (), return ())
-
-    playingColor   = APC.RGBPulsing APC.Subdiv4 (APC.velToRGBColor 22) (APC.velToRGBColor 23)
-    recordingColor = APC.RGBPulsing APC.Subdiv4 (APC.velToRGBColor 6) (APC.velToRGBColor 7)
-    stoppedColor   = APC.RGBSolid (APC.velToRGBColor 14)
-    offColor       = APC.RGBOff
-
-    schedule t = lift $ modify (\s -> s { csQueue = t : csQueue s })
-
-    activateTransition t = do
-        (state', lights, action) <- runTransition t <$> lift get
-        lift $ put state'
-        lights
-        action
 
 data LooperState = LooperState 
     { lsMidiDevs    :: Devs
