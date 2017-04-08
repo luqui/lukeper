@@ -135,42 +135,52 @@ startLooper = do
     --    APC.MatrixButton coord APC.PressDown <- e
     --    ...
     -- and mzero means "doesn't fire"
-    S.whenever (\e -> matches [ () | APC.OutMatrixButton _ PressDown <- [e] ]) $ \(APC.OutMatrixButton (APC.Coord (i,j)) _) ->
-        schedule . (Just (APC.Coord (i,j)),) $ query (\s -> transChannel i (tapChannel i j (csPosition s)))
-    S.whenever (\e -> matches [ () | APC.OutMatrixButton _ PressLong <- [e] ]) $ \(APC.OutMatrixButton (APC.Coord (i,j)) _) ->
-        activateTransition $ transChannel i . (stopActive i <>) . Transition $ \ch -> 
+    S.whenever $ \e -> do
+        APC.OutMatrixButton (APC.Coord (i,j)) PressDown <- return e
+        lift . schedule . (Just (APC.Coord (i,j)),) $ query (\s -> transChannel i (tapChannel i j (csPosition s)))
+    S.whenever $ \e -> do
+        APC.OutMatrixButton (APC.Coord (i,j)) PressLong <- return e
+        lift . activateTransition $ transChannel i . (stopActive i <>) . Transition $ \ch -> 
             (ch { chSlots = chSlots ch Array.// [(j, False)] },
              S.send (APC.InMatrixButton (APC.Coord (i,j)) offColor),
              do freshLoop i j
                 clearQueue (APC.Coord (i,j)))
-    S.whenever (\e -> matches [ () | APC.OutFader _ _ <- [e] ]) $ \(APC.OutFader i level) -> 
-        if | 1 <= i && i <= 8 -> 
-            activateTransition . transChannel i . Transition $ \ch -> (ch { chLevel = level }, return (), return ())
-           | i == 9 ->
-            activateTransition . Transition $ \cs -> (cs { csLevel = level }, return (), return ())
-           | otherwise ->
-            return ()
-    S.whenever (\e -> matches [ () | APC.OutTempoChange _ <- [e] ]) $ \(APC.OutTempoChange dt) ->  do
-        pos <- lift $ gets csPosition
-        activateTransition . Transition $ \s ->
-            let stretch = 1.01^^dt in
-            (s { csLoops = fmap (Loop.stretch stretch) (csLoops s)
-               , csQuantization = fmap (\(period, phase) -> 
-                    (round (fromIntegral period * stretch), stretchPhase stretch pos phase)) (csQuantization s)
-               , csChannels = fmap (\ch -> ch { chActiveSlot = (fmap.second) (stretchActiveSlot stretch pos) (chActiveSlot ch) }) (csChannels s)
-               }
-            , return (), return ())
-    S.whenever (\e -> matches [ () | APC.OutUnmuteButton _ True <- [e] ]) $ \(APC.OutUnmuteButton ch _) -> do
-        activateTransition . transChannel ch . Transition $ \s ->
+    S.whenever $ \e -> do
+        APC.OutFader i level <- return e
+        lift $
+            if | 1 <= i && i <= 8 -> 
+                activateTransition . transChannel i . Transition $ \ch -> 
+                    (ch { chLevel = level }, return (), return ())
+               | i == 9 ->
+                activateTransition . Transition $ \cs -> (cs { csLevel = level }, return (), return ())
+               | otherwise ->
+                return ()
+    S.whenever $ \e -> do
+        APC.OutTempoChange dt <- return e
+        lift $ do
+            pos <- lift $ gets csPosition
+            activateTransition . Transition $ \s ->
+                let stretch = 1.01^^dt in
+                (s { csLoops = fmap (Loop.stretch stretch) (csLoops s)
+                   , csQuantization = fmap (\(period, phase) -> 
+                        (round (fromIntegral period * stretch), stretchPhase stretch pos phase)) (csQuantization s)
+                   , csChannels = fmap (\ch -> ch { 
+                        chActiveSlot = (fmap.second) (stretchActiveSlot stretch pos) (chActiveSlot ch) }) (csChannels s)
+                   }
+                , return (), return ())
+    S.whenever $ \e -> do
+        APC.OutUnmuteButton ch True <- return e
+        lift . activateTransition . transChannel ch . Transition $ \s ->
             (s { chMute = not (chMute s) },
              S.send (APC.InUnmuteButton ch (chMute s)),
              return ())
-    S.when (\e -> matches [ () | APC.OutSessionButton True <- [e] ]) $ \_ -> do
+    S.when $ \e -> do 
+        APC.OutSessionButton True <- return e
         -- XXX hack -- we can't reboot in the middle of a conditional event handler,
         -- because of the way Sequencer.processEvents works. It will not correctly
         -- clear conditional events.  So we use S.after 0 to convert into a timed
         -- event, which works correctly.
-        after 0 $ do
+        lift . after 0 $ do
             S.rebootSequencerT APC.apc40Raw
             startLooper
 

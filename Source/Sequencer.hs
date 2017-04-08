@@ -6,10 +6,12 @@ import qualified Data.Map as Map
 import qualified Data.Sequence as Seq
 import qualified System.MIDI as MIDI
 
+import Control.Monad (mzero)
 import Control.Monad.IO.Class (MonadIO(..))
 import Control.Monad.Trans.Class (MonadTrans, lift)
 import Data.Foldable (toList)
 
+import Control.Monad.Trans.Maybe
 import Control.Monad.Trans.State
 import Data.Word
 
@@ -21,7 +23,7 @@ data SeqState m i o = SeqState
     { seqMidiDevs    :: Devs
     , seqController  :: Either MIDI.MidiMessage o -> m ()
     , seqTimedEvents :: Map.Map Time (m ())
-    , seqCondEvents  :: Seq.Seq (i -> m Bool, i -> m ())
+    , seqCondEvents  :: Seq.Seq (i -> m (Maybe ())) -- Just () to remove, Nothing to keep
     , seqCurrentTime :: Word32
     }
 
@@ -93,12 +95,12 @@ processEvent i = SequencerT $ do
     modify (\s -> s { seqCondEvents = handlers' })
     where
     go (Seq.viewl -> Seq.EmptyL) = gets seqCondEvents
-    go (Seq.viewl -> (condaction, action) Seq.:< hs) = do
-        cond <- getSequencerT (condaction i)
-        -- if the condition passes, the action is run then its handler is removed.
-        if cond
-            then getSequencerT (action i) >> go hs
-            else ((condaction,action) Seq.<|) <$> go hs
+    go (Seq.viewl -> action Seq.:< hs) = do
+        cond <- getSequencerT (action i)
+        -- If the action passes, the handler is removed
+        case cond of
+            Just () -> go hs
+            Nothing -> (action Seq.<|) <$> go hs
     go _ = error "impossible non-matching view pattern"
 
 tick :: (MonadIO m) => SequencerT i o m ()
@@ -118,20 +120,17 @@ tick = SequencerT $ do
     ctrl <- gets seqController
     getSequencerT $ mapM_ (ctrl . Left) messages
 
+-- The general pattern of using when/whenever is:
+-- when $ \e -> do
+--    SomePattern <- return e
+--    lift $ -- what to do if action succeeds
+when :: (Monad m) => (i -> MaybeT (SequencerT i o m) ()) -> SequencerT i o m ()
+when action = SequencerT . modify $ \s -> s { seqCondEvents = seqCondEvents s Seq.|> (runMaybeT . action) }
 
-
-when :: (Monad m) => (i -> Bool) -> (i -> SequencerT i o m ()) -> SequencerT i o m ()
-when cond = whenM (return . cond)
-
-whenM :: (Monad m) => (i -> SequencerT i o m Bool) -> (i -> SequencerT i o m ()) -> SequencerT i o m ()
-whenM cond action = SequencerT $
-    modify $ \s -> s { seqCondEvents = seqCondEvents s Seq.|> (cond, action) }
-
-whenever :: (Monad m) => (i -> Bool) -> (i -> SequencerT i o m ()) -> SequencerT i o m ()
-whenever cond = wheneverM (return . cond)
-
-wheneverM :: (Monad m) => (i -> SequencerT i o m Bool) -> (i -> SequencerT i o m ()) -> SequencerT i o m ()
-wheneverM cond action = whenM cond (\i -> action i >> wheneverM cond action)
+whenever :: (Monad m) => (i -> MaybeT (SequencerT i o m) ()) -> SequencerT i o m ()
+whenever action = when $ \i -> do
+    _ <- lift $ runMaybeT (action i)
+    mzero
 
 send :: (Monad m) => o -> SequencerT i o m ()
 send o = SequencerT $ do
