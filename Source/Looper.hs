@@ -1,6 +1,8 @@
-{-# LANGUAGE FlexibleContexts, MultiWayIf, RecordWildCards, ScopedTypeVariables, TupleSections #-}
+{-# LANGUAGE FlexibleContexts, MultiWayIf, NondecreasingIndentation, RecordWildCards, ScopedTypeVariables, TupleSections #-}
 
 module Looper where
+
+import Prelude hiding (break)
 
 import qualified Control.Exception as Exc
 import qualified Control.Monad as M
@@ -55,6 +57,7 @@ data ControlState = ControlState
     , csLoops :: Array.Array APC.Coord Loop.Loop
     , csQueue :: [(Maybe APC.Coord, Transition ControlState)]  -- reversed
     , csLevel :: Double
+    , csBreak :: Bool
     }
 
 data ActiveSlotState = Recording | Playing Int -- int is phase
@@ -105,6 +108,19 @@ transChannel i (Transition f) = Transition $ \s ->
         let (ch', lights, changes) = f (csChannels s Array.! i) in
         (s { csChannels = csChannels s Array.// [(i, ch')] }, lights, changes)
 
+transAllChannels :: Transition Channel -> Transition ControlState
+transAllChannels t = query $ \s ->
+    mconcat [ transChannel i t | i <- Array.indices (csChannels s) ]
+
+restartChannel :: Int -> Transition Channel
+restartChannel phase = Transition $ \ch -> 
+    (ch { chActiveSlot = fmap (\(n, slotstate) ->
+            (n, case slotstate of
+                    Playing _ -> Playing phase
+                    Recording -> Recording)) (chActiveSlot ch) },
+     return (),
+     return ())
+
 query :: (s -> Transition s) -> Transition s
 query f = Transition (\s -> runTransition (f s) s)
 
@@ -129,6 +145,7 @@ startLooper = do
             , csLoops = loops
             , csQueue = []
             , csLevel = 1
+            , csBreak = False
             } 
 
     -- TODO, I think we can use a single MonadPlus for this, e.g.
@@ -174,6 +191,22 @@ startLooper = do
             (s { chMute = not (chMute s) },
              S.send (APC.InUnmuteButton ch (chMute s)),
              return ())
+    S.whenever $ \e -> do
+        APC.OutStopAllButton True <- return e
+        lift $ do
+            quant <- lift $ gets csQuantization
+            break <- lift $ gets csBreak
+            let delay | Just (bar, _) <- quant, not break = (1000*bar) `div` (16*44100)  -- wait 1 sixteenth to break for a final hit
+                      | otherwise                         = 0
+            after (fromIntegral delay) . activateTransition . query $ \state ->
+                if not (csBreak state) then
+                    Transition (\s -> (s { csBreak = True }, return (), return ()))
+                else
+                    transAllChannels (restartChannel (csPosition state)) <> 
+                    Transition (\s -> (s { csBreak = False
+                                         , csQuantization = fmap (\(l,_) -> (l, csPosition s)) (csQuantization s) }
+                                      , return ()
+                                      , return ()))
     S.when $ \e -> do 
         APC.OutSessionButton True <- return e
         -- XXX hack -- we can't reboot in the middle of a conditional event handler,
@@ -248,6 +281,7 @@ activateTransition t = do
 renderMix :: LooperM Mix
 renderMix = do
     state <- lift get
+    if csBreak state then return [] else do
     return $ catMaybes . flip map (Array.assocs (csChannels state)) $ \(i,ch) ->
             if | Just (j, chstate) <- chActiveSlot ch
                  , not (chMute ch) -> 
@@ -259,9 +293,10 @@ runLooper winsize = do
     state <- lift get
     let pos = csPosition state
 
-    runqueue <- case csQuantization state of
-        Nothing -> return True
-        Just (period, phase) -> do
+    runqueue <- case (csBreak state, csQuantization state) of
+        (True, _) -> return False
+        (False, Nothing) -> return True
+        (False, Just (period, phase)) -> do
             let bar = quantPoint period phase pos
             let beat = quantPoint (period `div` 4) phase pos -- TODO more flexible than 4 beats/bar
             -- XXX "24 times per quarter note" but subdiv doesn't match, seems to be 12 times 

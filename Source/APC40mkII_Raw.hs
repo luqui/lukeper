@@ -113,6 +113,15 @@ rgbButton note = Control $ \out -> do
 longRGBButton :: (MonadRefs m, MonadSched m) => Int -> MIDIControl m RGBColorState LongPress
 longRGBButton note = right (longPress 500) . rgbButton note
 
+inputOnlyButton :: (Monad m) => Int -> MIDIControl m Void Bool
+inputOnlyButton note  = Control $ \out -> do
+    let inproc (Left (MIDI.MidiMessage _ (MIDI.NoteOn note' vel)))
+            | note == note'  = out (Right (vel /= 0))
+        inproc (Left (MIDI.MidiMessage _ (MIDI.NoteOff note' _)))
+            | note == note'  = out (Right False)
+        inproc _ = return ()
+    return inproc
+
 monoButton :: (Monad m) => Int -> Bool -> MIDIControl m Bool Bool
 monoButton note val0 = Control $ \out -> do
     let inproc (Left (MIDI.MidiMessage _ (MIDI.NoteOn note' vel)))
@@ -193,6 +202,7 @@ data APCOutMessage
     | OutMetronome Bool
     | OutSessionButton Bool
     | OutUnmuteButton Int Bool
+    | OutStopAllButton Bool
     deriving (Eq)
 
 data APCInMessage
@@ -219,6 +229,7 @@ apc40Raw = Control $ \out -> do
     metronomeI <- instControl (monoButton 0x5a False) (out . Arrow.right OutMetronome)
     sessionI <- instControl (monoButton 0x66 False) (out . Arrow.right OutSessionButton)
     unmuteI <- instControl (channelMonoButton 0x32 True) (out . Arrow.right (uncurry OutUnmuteButton))
+    stopAllI <- instControl (inputOnlyButton 0x51) (out . Arrow.right OutStopAllButton)
     return $ \case 
         Left midi -> do
             matrixI (Left midi)
@@ -227,6 +238,7 @@ apc40Raw = Control $ \out -> do
             metronomeI (Left midi)
             sessionI (Left midi)
             unmuteI (Left midi)
+            stopAllI (Left midi)
         Right (InMatrixButton coord state) -> matrixI (Right (coord, state))
         Right (InMetronome b) -> metronomeI (Right b)
         Right (InSessionButton b) -> sessionI (Right b)
