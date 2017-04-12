@@ -96,33 +96,37 @@ playUnstretched loop pos mixout outbuf = do
 playStretched :: Loop -> Int -> Double -> Array.IOUArray Int Double -> IO ()
 playStretched loop pos mixout outbuf = do
     loopbuf <- readIORef (loopBuffer loop)
-    let basepos = round (fromIntegral pos / loopStretchFactor loop)
-    let grainix = basepos `div` grainsize
+    let basepos = fromIntegral pos / loopStretchFactor loop
+    let grainix = fromIntegral (floor (basepos / grainsize) :: Int)
     let grainstart = grainsize * grainix
-    let modgrainsize = round (fromIntegral grainsize * loopStretchFactor loop)
-    let grainoffset = pos - modgrainsize * grainix
+    let modgrainsize = grainsize * loopStretchFactor loop
+    let grainoffset = fromIntegral pos - modgrainsize * grainix
     let samplei = \i -> 
           -- | loopStretchFactor loop < 1 = \i ->
-                let subgrainsize = round (fromIntegral grainsize * loopStretchFactor loop) in do
-                thissample <- Array.readArray (loopData loopbuf) ((grainstart + grainoffset + i) `mod` loopSize loopbuf)
+                let subgrainsize = grainsize * loopStretchFactor loop in do
+                thissample <- sampleArray loopbuf (grainstart + grainoffset + i)
                 if | grainoffset + i < xfade -> do
-                    prevsample <- Array.readArray (loopData loopbuf) 
-                                ((grainstart - grainsize + subgrainsize + grainoffset + i) `mod` loopSize loopbuf)
+                    prevsample <- sampleArray loopbuf
+                                 (grainstart - grainsize + subgrainsize + grainoffset + i)
                             --   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^   ^^^^^^^^^^^^^^^^
                             --         end of prev grain                 how far into this grain
-                    let delta = fromIntegral (grainoffset + i) / fromIntegral xfade
+                    let delta = (grainoffset + i) / xfade
                     return $ thissample * delta + prevsample * (1 - delta)
-                   | otherwise -> Array.readArray (loopData loopbuf) ((grainstart + grainoffset + i) `mod` loopSize loopbuf)
+                   | otherwise -> sampleArray loopbuf (grainstart + grainoffset + i)
     loopbufsize <- getSize (loopData loopbuf)
     when (loopbufsize /= 0) $ do
         bufsize <- getSize outbuf
         forM_ [0..bufsize-1] $ \i -> do
             cur <- Array.readArray outbuf i
-            samp <- samplei i
+            samp <- samplei (fromIntegral i)
             Array.writeArray outbuf i (cur + mixout*samp)
     where
-    grainsize = round (44100 * 0.1 :: Double)  -- 100ms
+    grainsize = 44100 * 0.1 :: Double  -- 100ms
     xfade = 500  -- samples
+    sampleArray loopbuf ix = avg <$> Array.readArray (loopData loopbuf) (floor   ix `mod` loopSize loopbuf) 
+                                 <*> Array.readArray (loopData loopbuf) (ceiling ix `mod` loopSize loopbuf)
+    avg x y = 0.5 * (x + y)
+    
 
 
 getSize :: (Array.MArray Array.IOUArray a IO) => Array.IOUArray Int a -> IO Int
