@@ -177,7 +177,7 @@ startLooper = do
         lift $ do
             pos <- lift $ gets csPosition
             activateTransition . Transition $ \s ->
-                let stretch = 1.01^^dt in
+                let stretch = 1.01^^(-dt) in
                 (s { csLoops = fmap (Loop.stretch stretch) (csLoops s)
                    , csQuantization = fmap (\(period, phase) -> 
                         (round (fromIntegral period * stretch), stretchPhase stretch pos phase)) (csQuantization s)
