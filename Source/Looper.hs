@@ -324,11 +324,13 @@ runLooper winsize = do
     where
     quantPoint period phase pos = ((pos-phase) `div` period) /= ((pos-phase) - winsize) `div` period
 
+type IOBuffers = (IOArray.IOUArray Int Double, IOArray.IOUArray Int Double)
 
 data LooperState = LooperState 
     { lsMidiDevs    :: Devs
     , lsFrame       :: Int -> LooperM Mix
     , lsSeqState    :: IORef (S.SeqState LooperM ControlIn ControlOut, ControlState)
+    , lsBuffers     :: IORef (Int, IOBuffers)
     }
 
 hs_looper_init :: IO (StablePtr LooperState)
@@ -336,15 +338,32 @@ hs_looper_init = wrapErrors "hs_looper_init" $ do
     devs <- openDevs
     (((), seqstate), superstate) <- runStateT (S.runSequencerT startLooper =<< S.bootSequencerT devs APC.apc40Raw) (error "first order of business must be to set state")
     seqstateref <- newIORef (seqstate, superstate)
+    buffers <- newIORef =<< (256,) <$> makeBuffers 256  -- a guess, will be reinitialized if incorrect
     newStablePtr $ LooperState { lsMidiDevs = devs
                                , lsFrame = runLooper
                                , lsSeqState = seqstateref
+                               , lsBuffers = buffers
                                }
 
 hs_looper_main :: StablePtr LooperState -> Word32 -> Word32 -> Word32 -> Foreign.Ptr (Foreign.Ptr Float) -> IO ()
 hs_looper_main state window input output channels = wrapErrors "hs_looper_main" $ do
     looperstate <- deRefStablePtr state
     hsLooperMain looperstate (fromIntegral window) (fromIntegral input) (fromIntegral output) channels
+
+makeBuffers :: Int -> IO IOBuffers
+makeBuffers window = (,) <$> buf <*> buf
+    where
+    buf = IOArray.newArray (0, window-1) 0
+
+getBuffers :: LooperState -> Int -> IO IOBuffers
+getBuffers state window = do
+    (bufwin, buffers) <- readIORef (lsBuffers state)
+    if bufwin == window
+        then return buffers
+        else do
+            newbuffers <- makeBuffers window
+            writeIORef (lsBuffers state) (window, newbuffers)
+            return newbuffers
 
 hsLooperMain :: LooperState -> Int -> Int -> Int -> Foreign.Ptr (Foreign.Ptr Float) -> IO ()
 hsLooperMain looperstate window _inchannels _outchannels channels = do
@@ -353,10 +372,9 @@ hsLooperMain looperstate window _inchannels _outchannels channels = do
     writeIORef (lsSeqState looperstate) (seqstate', superstate')
     
     inbuf <- peekElemOff channels 0
-    -- TODO, don't allocate every time
-    inbufarray <- IOArray.newListArray (0,window-1) 
-                    =<< mapM (fmap realToFrac . peekElemOff inbuf) [0..window-1]
-    outbufarray <- IOArray.newArray (0,window-1) 0
+    (inbufarray, outbufarray) <- getBuffers looperstate window
+    forM_ [0..window-1] $ \i -> IOArray.writeArray inbufarray i =<< realToFrac <$> peekElemOff inbuf i
+    forM_ [0..window-1] $ \i -> IOArray.writeArray outbufarray i 0
 
     forM_ mix $ \(loop, level, state, pos) -> 
         case state of
