@@ -47,7 +47,23 @@ type ControlIn = APC.APCOutMessage
 type ControlOut = APC.APCInMessage
 type LooperM = S.SequencerT ControlIn ControlOut (StateT ControlState IO)
 
-type Mix = [(Loop.Loop, Double, ActiveSlotState, Int)]
+
+type Sends = Array.Array Int Float
+
+data MixChannel = MixChannel
+    { mcLoop :: Loop.Loop
+    , mcLevel :: Double
+    , mcState :: ActiveSlotState
+    , mcPosition :: Int
+    , mcSends :: Sends
+    }
+
+data InputChannel = InputChannel
+    { icLevel :: Double
+    , icSends :: Sends
+    }
+
+data Mix = Mix InputChannel [MixChannel]
 
 
 data ControlState = ControlState
@@ -58,6 +74,7 @@ data ControlState = ControlState
     , csQueue :: [(Maybe APC.Coord, Transition ControlState)]  -- reversed
     , csLevel :: Double
     , csBreak :: Bool
+    , csSends :: Sends
     }
 
 data ActiveSlotState = Recording | Playing Int -- int is phase
@@ -146,6 +163,7 @@ startLooper = do
             , csQueue = []
             , csLevel = 1
             , csBreak = False
+            , csSends = Array.listArray (1,8) (repeat 0)
             } 
 
     -- TODO, I think we can use a single MonadPlus for this, e.g.
@@ -207,6 +225,11 @@ startLooper = do
                                          , csQuantization = fmap (\(l,_) -> (l, csPosition s)) (csQuantization s) }
                                       , return ()
                                       , return ()))
+    S.whenever $ \e -> do
+        APC.OutDial dial val <- return e
+        lift $ do
+            S.send (APC.InDial dial val)
+            lift $ modify (\s -> s { csSends = csSends s Array.// [(dial, fromIntegral val / 127)] })
     S.when $ \e -> do 
         APC.OutSessionButton True <- return e
         -- XXX hack -- we can't reboot in the middle of a conditional event handler,
@@ -281,12 +304,20 @@ activateTransition t = do
 renderMix :: LooperM Mix
 renderMix = do
     state <- lift get
-    if csBreak state then return [] else do
-    return $ catMaybes . flip map (Array.assocs (csChannels state)) $ \(i,ch) ->
+    let inputChannel = InputChannel { icLevel = csLevel state, icSends = csSends state }
+    let loopChannels = catMaybes . flip map (Array.assocs (csChannels state)) $ \(i,ch) ->
             if | Just (j, chstate) <- chActiveSlot ch
                  , not (chMute ch) -> 
-                    Just (csLoops state Array.! APC.Coord (i,j), csLevel state * chLevel ch, chstate, csPosition state)
+                    Just (MixChannel
+                        { mcLoop = csLoops state Array.! APC.Coord (i,j)
+                        , mcLevel = csLevel state * chLevel ch
+                        , mcState = chstate
+                        , mcPosition = csPosition state
+                        , mcSends = csSends state
+                        })
                | otherwise -> Nothing
+    return $ 
+        if csBreak state then Mix inputChannel [] else Mix inputChannel loopChannels
 
 runLooper :: Int -> LooperM Mix
 runLooper winsize = do
@@ -366,9 +397,10 @@ getBuffers state window = do
             return newbuffers
 
 hsLooperMain :: LooperState -> Int -> Int -> Int -> Foreign.Ptr (Foreign.Ptr Float) -> IO ()
-hsLooperMain looperstate window _inchannels _outchannels channels = do
+hsLooperMain looperstate window _inchannels outchannels channels = do
     (seqstate, superstate) <- readIORef (lsSeqState looperstate)
-    ((mix, seqstate'), superstate') <- runStateT (S.runSequencerT (S.tick >> lsFrame looperstate window) seqstate) superstate
+    ((Mix inputmix channelmixes, seqstate'), superstate') 
+        <- runStateT (S.runSequencerT (S.tick >> lsFrame looperstate window) seqstate) superstate
     writeIORef (lsSeqState looperstate) (seqstate', superstate')
     
     inbuf <- peekElemOff channels 0
@@ -376,17 +408,19 @@ hsLooperMain looperstate window _inchannels _outchannels channels = do
     forM_ [0..window-1] $ \i -> IOArray.writeArray inbufarray i =<< realToFrac <$> peekElemOff inbuf i
     forM_ [0..window-1] $ \i -> IOArray.writeArray outbufarray i 0
 
-    forM_ mix $ \(loop, level, state, pos) -> 
-        case state of
-            Recording -> Loop.append loop pos inbufarray
-            Playing phase -> Loop.play loop (pos - phase) level outbufarray
+    forM_ channelmixes $ \MixChannel{..} -> 
+        case mcState of
+            Recording -> Loop.append mcLoop mcPosition inbufarray
+            Playing phase -> Loop.play mcLoop (mcPosition - phase) mcLevel outbufarray
 
-    outbufL <- peekElemOff channels 0
-    outbufR <- peekElemOff channels 1
+    mainoutbuf <- peekElemOff channels 0
+    sendbufs <- mapM (peekElemOff channels) [1..min (outchannels-1) 8]
+    
     forM_ [0..window-1] $ \i -> do
         sample <- realToFrac <$> IOArray.readArray outbufarray i
-        pokeElemOff outbufL i sample
-        pokeElemOff outbufR i sample
+        pokeElemOff mainoutbuf i sample
+        forM_ (zip [1..8] sendbufs) $ \(sendix, sendbuf) -> 
+            pokeElemOff sendbuf i ((icSends inputmix Array.! sendix) * sample)
 
 hs_looper_uilog :: StablePtr LooperState -> IO C.CString
 hs_looper_uilog state = wrapErrors "hs_looper_uilog" $ do

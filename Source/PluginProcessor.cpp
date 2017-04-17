@@ -16,12 +16,16 @@
 LukeperAudioProcessor::LukeperAudioProcessor()
 #ifndef JucePlugin_PreferredChannelConfigurations
      : AudioProcessor (BusesProperties()
-                     #if ! JucePlugin_IsMidiEffect
-                      #if ! JucePlugin_IsSynth
-                       .withInput  ("Input",  AudioChannelSet::stereo(), true)
-                      #endif
-                       .withOutput ("Output", AudioChannelSet::stereo(), true)
-                     #endif
+                       .withInput  ("Input",  AudioChannelSet::mono(), true)
+                       .withOutput ("Output", AudioChannelSet::mono(), true)
+                       .withOutput ("Send 1", AudioChannelSet::mono(), false)
+                       .withOutput ("Send 2", AudioChannelSet::mono(), false)
+                       .withOutput ("Send 3", AudioChannelSet::mono(), false)
+                       .withOutput ("Send 4", AudioChannelSet::mono(), false)
+                       .withOutput ("Send 5", AudioChannelSet::mono(), false)
+                       .withOutput ("Send 6", AudioChannelSet::mono(), false)
+                       .withOutput ("Send 7", AudioChannelSet::mono(), false)
+                       .withOutput ("Send 8", AudioChannelSet::mono(), false)
                        )
 #endif
 { }
@@ -37,20 +41,12 @@ const String LukeperAudioProcessor::getName() const
 
 bool LukeperAudioProcessor::acceptsMidi() const
 {
-   #if JucePlugin_WantsMidiInput
-    return true;
-   #else
     return false;
-   #endif
 }
 
 bool LukeperAudioProcessor::producesMidi() const
 {
-   #if JucePlugin_ProducesMidiOutput
-    return true;
-   #else
     return false;
-   #endif
 }
 
 double LukeperAudioProcessor::getTailLengthSeconds() const

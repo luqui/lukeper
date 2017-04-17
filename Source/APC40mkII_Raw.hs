@@ -155,6 +155,26 @@ relativeControl cc = Control $ \out -> do
                         else out (Right (val-128))
         _ -> return ()
 
+dial :: (Monad m) => Int -> MIDIControl m Int Int
+dial cc = Control $ \out -> do
+    let inproc (Left (MIDI.MidiMessage _ (MIDI.CC cc' val)))
+            | cc == cc' = out (Right val)
+        inproc (Right val) = out (Left (MIDI.MidiMessage 1 (MIDI.CC cc val)))
+        inproc _ = return ()
+    inproc (Right 0)
+    return inproc
+
+-- dial ids are 1 based
+dials :: (Monad m) => MIDIControl m (Int, Int) (Int, Int)
+dials = Control $ \out -> do
+    controls <- mapM (\ctrl -> instControl (arr (Arrow.right (ctrl,)) . dial (0x10+ctrl-1)) out) [1..8]
+    return $ \case
+        Left msg@(MIDI.MidiMessage _ (MIDI.CC cc _))
+            | 0x10 <= cc && cc <= 0x17 -> (controls !! (cc - 0x10)) (Left msg)
+        Right (ctrl, val)
+            | 1 <= ctrl && ctrl <= 8 -> (controls !! (ctrl-1)) (Right val)
+        _ -> return ()
+
 -- The whole matrix of buttons as a single Control
 
 newtype Coord = Coord (Int,Int)
@@ -203,6 +223,7 @@ data APCOutMessage
     | OutSessionButton Bool
     | OutUnmuteButton Int Bool
     | OutStopAllButton Bool
+    | OutDial Int Int
     deriving (Eq)
 
 data APCInMessage
@@ -211,6 +232,7 @@ data APCInMessage
     | InSessionButton Bool
     | InUnmuteButton Int Bool
     | InClock
+    | InDial Int Int
     deriving (Eq)
 
 apc40Raw :: (MonadRefs m, MonadSched m) => MIDIControl m APCInMessage APCOutMessage
@@ -230,6 +252,7 @@ apc40Raw = Control $ \out -> do
     sessionI <- instControl (monoButton 0x66 False) (out . Arrow.right OutSessionButton)
     unmuteI <- instControl (channelMonoButton 0x32 True) (out . Arrow.right (uncurry OutUnmuteButton))
     stopAllI <- instControl (inputOnlyButton 0x51) (out . Arrow.right OutStopAllButton)
+    dialsI <- instControl dials (out . Arrow.right (uncurry OutDial))
     return $ \case 
         Left midi -> do
             matrixI (Left midi)
@@ -239,8 +262,10 @@ apc40Raw = Control $ \out -> do
             sessionI (Left midi)
             unmuteI (Left midi)
             stopAllI (Left midi)
+            dialsI (Left midi)
         Right (InMatrixButton coord state) -> matrixI (Right (coord, state))
         Right (InMetronome b) -> metronomeI (Right b)
         Right (InSessionButton b) -> sessionI (Right b)
         Right (InUnmuteButton ch b) -> unmuteI (Right (ch,b))
         Right InClock -> out (Left MIDI.SRTClock)
+        Right (InDial ctrl val) -> dialsI (Right (ctrl, val))
