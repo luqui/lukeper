@@ -1,4 +1,4 @@
-{-# LANGUAGE FlexibleContexts, MultiWayIf #-}
+{-# LANGUAGE BangPatterns, FlexibleContexts, MultiWayIf #-}
 
 module Loop 
     ( AudioBuffer
@@ -12,6 +12,7 @@ module Loop
     )
 where
 
+import qualified Data.Array.Base as Array
 import qualified Data.Array.IO as Array
 
 import Control.Monad (forM_, when)
@@ -50,7 +51,7 @@ ensureBuffer loopbufref = do
     loopbuf <- readIORef loopbufref
     bufsize <- getSize (loopData loopbuf)
     when (bufsize == 0) $ do
-        loopdata' <- Array.newArray_ (0,30*44100-1)  -- 30 second buffer per loop, 10MB... it's 2017.
+        loopdata' <- Array.unsafeNewArray_ (0,44100-1)
         writeIORef loopbufref (loopbuf { loopData = loopdata' })
     readIORef loopbufref
 
@@ -61,7 +62,13 @@ reallocToFit :: Int -> Array.IOUArray Int Double -> IO (Array.IOUArray Int Doubl
 reallocToFit fit buf = do
     size <- getSize buf
     if fit > size
-        then reallocToFit fit =<< Array.newListArray (0, 2*size-1) =<< Array.getElems buf
+        then do
+            let !len = 2*size-1
+            buf' <- Array.unsafeNewArray_ (0,len)
+            let fillFrom !i | i == len  = return buf'
+                            | otherwise = do Array.unsafeWrite buf' i =<< Array.unsafeRead buf i
+                                             fillFrom (i+1)
+            fillFrom 0
         else return buf
 
 -- NB. disregards position, assumes append at end of buffer.
