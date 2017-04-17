@@ -32,7 +32,7 @@ data Loop = Loop
 
 newLoopBuffer :: IO LoopBuffer
 newLoopBuffer = do
-    loopdata <- Array.newArray (0,-1) 0
+    loopdata <- Array.newArray_ (0,-1)
     return $ LoopBuffer { loopSize = 0, loopData = loopdata }
     
 newLoop :: IO Loop
@@ -50,12 +50,19 @@ ensureBuffer loopbufref = do
     loopbuf <- readIORef loopbufref
     bufsize <- getSize (loopData loopbuf)
     when (bufsize == 0) $ do
-        loopdata' <- Array.newArray (0,44099) 0
+        loopdata' <- Array.newArray_ (0,30*44100-1)  -- 30 second buffer per loop, 10MB... it's 2017.
         writeIORef loopbufref (loopbuf { loopData = loopdata' })
     readIORef loopbufref
 
 stretch :: Double -> Loop -> Loop
 stretch factor loop = loop { loopStretchFactor = loopStretchFactor loop * factor }
+
+reallocToFit :: Int -> Array.IOUArray Int Double -> IO (Array.IOUArray Int Double)
+reallocToFit fit buf = do
+    size <- getSize buf
+    if fit > size
+        then reallocToFit fit =<< Array.newListArray (0, 2*size-1) =<< Array.getElems buf
+        else return buf
 
 -- NB. disregards position, assumes append at end of buffer.
 -- Quite tricky to get "insert" which is I think what it should do
@@ -65,11 +72,7 @@ append :: Loop -> Int -> Array.IOUArray Int Double -> IO ()
 append loop _ inbuf = do
     loopbuf <- ensureBuffer (loopBuffer loop)
     bufsize <- getSize inbuf
-    loopbufsize <- getSize (loopData loopbuf)
-    -- NB. reallocates at most once.  *Should* be enough but not technically correct.
-    loopdata' <- if loopSize loopbuf + bufsize > loopbufsize
-                    then Array.newListArray (0, loopbufsize*2-1) =<< Array.getElems (loopData loopbuf)
-                    else return (loopData loopbuf)
+    loopdata' <- reallocToFit (loopSize loopbuf + bufsize) (loopData loopbuf)
     forM_ [0..bufsize-1] $ \i -> do
         Array.writeArray loopdata' (loopSize loopbuf + i) =<< Array.readArray inbuf i
     writeIORef (loopBuffer loop) $  

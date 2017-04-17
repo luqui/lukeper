@@ -3883,6 +3883,7 @@
 				HEADER_SEARCH_PATHS = (
 					../../JuceLibraryCode,
 					../../../../JUCE/modules,
+                    "/Library/Frameworks/GHC.framework/Versions/8.0.1-x86_64/usr/lib/ghc-8.0.1/include",
 					"$(inherited)",
 				);
 				INFOPLIST_FILE = "Info-AU.plist";
@@ -3977,6 +3978,7 @@
 				HEADER_SEARCH_PATHS = (
 					../../JuceLibraryCode,
 					../../../../JUCE/modules,
+                    "/Library/Frameworks/GHC.framework/Versions/8.0.1-x86_64/usr/lib/ghc-8.0.1/include",
 					"$(inherited)",
 				);
 				INFOPLIST_FILE = "Info-AU.plist";
@@ -4119,6 +4121,7 @@
 				HEADER_SEARCH_PATHS = (
 					../../JuceLibraryCode,
 					../../../../JUCE/modules,
+                    "/Library/Frameworks/GHC.framework/Versions/8.0.1-x86_64/usr/lib/ghc-8.0.1/include",
 					"$(inherited)",
 				);
 				INSTALL_PATH = "@executable_path/../Frameworks";
@@ -4159,6 +4162,7 @@
 				HEADER_SEARCH_PATHS = (
 					../../JuceLibraryCode,
 					../../../../JUCE/modules,
+                    "/Library/Frameworks/GHC.framework/Versions/8.0.1-x86_64/usr/lib/ghc-8.0.1/include",
 					"$(inherited)",
 				);
 				INSTALL_PATH = "@executable_path/../Frameworks";

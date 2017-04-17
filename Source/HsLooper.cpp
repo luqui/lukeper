@@ -6,13 +6,10 @@
 //
 //
 
+#include "Rts.h"
 #include "HsLooper.h"
 
 extern "C" {
-    void hs_init(int*, char***);
-    void hs_add_root(void (*)());
-    void hs_exit();
-    
     void __stginit_Looper();
     void* hs_looper_init();
     void hs_looper_main(
@@ -29,7 +26,17 @@ static bool hs_initialized = false;
 
 HsLooper::HsLooper() {
     if (!hs_initialized) {
-        hs_init(0, 0);
+        RtsConfig conf = defaultRtsConfig;
+        conf.rts_opts_enabled = RtsOptsAll;
+
+        int argc = 4;
+        char* argv[] = { "main", "+RTS", "-H134217728", "-RTS" };
+        //int argc = 1;
+        //char* argv[] = { "main" };
+        char** argv_ = argv;
+
+        hs_init_ghc(&argc, &argv_, conf);
+
         hs_add_root(__stginit_Looper);
         hs_initialized = true;
     }
