@@ -74,8 +74,14 @@ instance (Ord t) => Monad (Window t) where
     return x = Window (\t -> (t, x)) -- return the largest valid window
     m >>= f = Window $ \t ->
         let (t', x) = runWindow m t
-            (t'', y) = runWindow (f x) t
-        in (min t' t'', y)
+            (t'', y) = runWindow (f x) t'
+        in (t'', y)
+
+-- We require that the output time is always <= input time.  Then it looks just
+-- like a state monad!  (Another possibility is 
+--    (t'', y) = runWindow (f x) t
+-- and returning min t' t'', for a more "parallel" feel.  There should not be any 
+-- semantic difference in what we are trying to model.
 
 windowSize :: Window t t
 windowSize = Window (\t -> (t, t))
