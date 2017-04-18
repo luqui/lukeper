@@ -1,4 +1,4 @@
-{-# LANGUAGE ExistentialQuantification #-}
+{-# LANGUAGE DeriveFunctor, ExistentialQuantification #-}
 
 module Signals where
 
@@ -66,15 +66,25 @@ newtype Window t a = Window { runWindow :: t -> (t, a) }
 instance Functor (Window t) where
     fmap f (Window w) = Window ((fmap.fmap) f w)
 
-instance (Num t) => Applicative (Window t) where
+instance (Ord t) => Applicative (Window t) where
     pure = return
     (<*>) = ap
 
-instance (Num t) => Monad (Window t) where
-    return x = Window (\t -> (0, x))   -- NB this is *not* a state monad
+instance (Ord t) => Monad (Window t) where
+    return x = Window (\t -> (t, x)) -- return the largest valid window
     m >>= f = Window $ \t ->
-        let (t', x) = runWindow m t in
-        first (t' +) (runWindow (f x) (t-t'))
+        let (t', x) = runWindow m t
+            (t'', y) = runWindow (f x) t
+        in (min t' t'', y)
+
+windowSize :: Window t t
+windowSize = Window (\t -> (t, t))
+
+restrict :: (Ord t) => t -> Window t ()
+restrict t = Window (\win -> (min t win, ()))
+
+-- With this monad instance, everything is uniform as long as events occur at
+-- the *beginning* of their window.
 
 --
 -- Taking (->) to mean Kliesli (Window t), we get
@@ -90,31 +100,31 @@ instance (Num t) => Monad (Window t) where
 
 -- Then to represent local states, we can use an arrow.
 
-data Stateful p a b = forall s. Stateful (p (s,a) (s,b))
+data Stateful p a b = forall s. Stateful s (p (s,a) (s,b))
 
 instance Arrow p => Category (Stateful p) where
-    id = Stateful id
+    id = Stateful () id
     -- f :: p (s,a) (s,b)
     -- g :: p (s',b) (s',c)
     -- _ :: p ((s,s'),a) ((s,s'),c)
     --
     -- ((s,s'),a) ----> (s',(s,a)) --> (s',(s,b)) ----> (s,(s',b)) ----> (s,(s',c)) -----> ((s,s'),c)
     --            shuf1          second f         shuf2           second g          unshuf
-    Stateful g . Stateful f = Stateful (arr shuf1 >>> second f >>> arr shuf2 >>> second g >>> arr unshuf)
+    Stateful s0' g . Stateful s0 f = Stateful (s0,s0') (arr shuf1 >>> second f >>> arr shuf2 >>> second g >>> arr unshuf)
         where
         shuf1 ((s,s'),a) = (s',(s,a))
         shuf2 (s',(s,b)) = (s,(s',b))
         unshuf (s,(s',c)) = ((s,s'),c)
 
 instance Arrow p => Arrow (Stateful p) where
-    arr f = Stateful (arr (second f))
+    arr f = Stateful () (arr (second f))
     -- f :: p (s,b) (s,c)
     -- g :: p (s',b') (s',c')
     -- _ :: p ((s,s'),(b,b')) ((s,s'),(c,c'))
     --
     -- ((s,s'),(b,b')) --> ((s,b),(s',b')) --> ((s,c),(s',c')) --> ((s,s'),(c,c'))
     --                shuf               f *** g              unshuf
-    Stateful f *** Stateful g = Stateful (arr shuf >>> (f *** g) >>> arr unshuf)
+    Stateful s0 f *** Stateful s0' g = Stateful (s0,s0') (arr shuf >>> (f *** g) >>> arr unshuf)
         where
         shuf ((s,s'),(b,b')) = ((s,b),(s',b'))
         unshuf ((s,c),(s',c')) = ((s,s'),(c,c'))
@@ -126,7 +136,7 @@ instance ArrowChoice p => ArrowChoice (Stateful p) where
     --
     -- ((s,s'), Either b b') ----> Either (s',(s,b)) (s,(s',b')) --> Either (s',(s,c)) (s,(s',c')) --> ((s,s'), Either c c')
     --                       shuf                       second f +++ second g                    unshuf
-    Stateful f +++ Stateful g = Stateful (arr shuf >>> (second f +++ second g) >>> arr unshuf)
+    Stateful s0 f +++ Stateful s0' g = Stateful (s0,s0') (arr shuf >>> (second f +++ second g) >>> arr unshuf)
         where
         shuf ((s,s'), Left b) = Left (s',(s,b))
         shuf ((s,s'), Right b) = Right (s,(s',b))
@@ -139,7 +149,50 @@ instance ArrowLoop p => ArrowLoop (Stateful p) where
     --
     -- ((s,b),d) --> (s, (b,d)) --> (s, (c,d)) --> ((s,c),d)
     --          shuf             f            unshuf
-    loop (Stateful f) = Stateful (loop (arr shuf >>> f >>> arr unshuf))
+    loop (Stateful s0 f) = Stateful s0 (loop (arr shuf >>> f >>> arr unshuf))
         where
         shuf ((s,b),d) = (s,(b,d))
         unshuf (s,(c,d)) = ((s,c),d)
+
+
+-- With the Window monad and Stateful arrows at our disposal, we can now define
+-- our signal transform type.
+
+type SigTrans t = Stateful (Kleisli (Window t))
+
+stateProc :: s -> (s -> a -> Window t (s,b)) -> SigTrans t a b
+stateProc s0 = Stateful s0 . Kleisli . uncurry
+
+newtype Piecewise a = Piecewise { getPiecewise :: a }
+    deriving (Functor)
+newtype Event a = Event { getEvent :: Maybe a }
+    deriving (Functor)
+
+stepper :: (Ord t) => a -> SigTrans t (Event a) (Piecewise a)
+stepper x0 = Stateful x0 . arr $ \(xcur,e) -> 
+    case getEvent e of
+        Nothing -> (xcur, Piecewise xcur)
+        Just xnext -> (xnext, Piecewise xnext)
+
+countEvents :: (Ord t) => SigTrans t (Event a) (Event (Int,a))
+countEvents = Stateful 0 . arr $ \(count,e) ->
+    count `seq` case getEvent e of
+        Nothing -> (count, Event Nothing)
+        Just x  -> (count+1, Event (Just (count,x)))
+
+data LongPress = PressDown | PressUp | PressLong
+
+data LongPressState t
+    = LPIdle
+    | LPWaiting t
+
+longPress :: (Ord t, Num t) => t -> SigTrans t (Event Bool) (Event LongPress)
+longPress delay = stateProc LPIdle $ \state e -> do
+    wsize <- windowSize
+    case (getEvent e, state) of
+        (Nothing, LPIdle) -> return (LPIdle, Event Nothing)
+        (Nothing, LPWaiting t)
+            | t <= 0 -> return (LPIdle, Event (Just PressLong))
+            | otherwise -> restrict t >> return (LPWaiting (t-wsize), Event Nothing)
+        (Just False, _) -> return (LPIdle, Event (Just PressUp))
+        (Just True, _) -> return (LPWaiting delay, Event (Just PressDown))
