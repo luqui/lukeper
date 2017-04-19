@@ -32,7 +32,7 @@ capture x = IWriter . ContT $ \c -> -- c :: (a, a -> IWriter r w b) -> Writer w 
             -- Re-run from the checkpoint, aborting at the "changeMind" call
             -- so we can figure out all the actions we ran.
             let (_, since) = runWriter (c (origx, \_ -> abort undefined))
-            -- Re-run from the checkpoint with the new value.
+            -- Invert all those actions, and re-run from the checkpoint with the new value.
             in IWriter . ContT $ \_ -> tell (inverse since) >> c (newx, changeMind newx)
     in c (x, changeMind x)
 
@@ -61,9 +61,9 @@ iwTest m = do
 
 test = iwTest $ do
     tellI [F "Start"]
-    (n, change) <- capture 0
+    (n, change) <- capture 1
     tellI [F $ "Number is " ++ show n]
-    dec (change (n+1)) 10 n
+    dec (change (2*n)) 10 n
     where
     dec retry 0 n = tellI [F $ "We are done"] >> return n
     dec retry m 0 = tellI [F $ "Number is too small, retrying"] >> retry
