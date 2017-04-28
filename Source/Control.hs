@@ -11,7 +11,6 @@ import qualified System.MIDI as MIDI
 import Control.Applicative (liftA2)
 import Control.Monad (filterM)
 import Control.Monad.Trans.Class (lift)
-import Data.Word (Word32)
 
 import Control.Category
 
@@ -60,14 +59,14 @@ class (Monad m) => MonadRefs m where
     writeRef :: Ref m a -> a -> m ()
 
 class (Monad m) => MonadSched m where
-    now :: m Word32
+    now :: m Time
     -- millisecs
-    at :: Word32 -> m () -> m ()
+    at :: Time -> m () -> m ()
 
-after :: (MonadSched m) => Word32 -> m () -> m ()
+after :: (MonadSched m) => Time -> m () -> m ()
 after dt action = do
     t <- now
-    at (t + dt) action
+    at (addTime t dt) action
 
 instance MonadRefs IO where
     type Ref IO = IORef.IORef
@@ -80,6 +79,19 @@ instance (MonadRefs m) => MonadRefs (StateT.StateT s m) where
     newRef = lift . newRef
     readRef = lift . readRef
     writeRef r = lift . writeRef r
+
+
+newtype Time = Time Int  -- samples at 44100
+    deriving (Eq, Ord)
+
+fromSamples :: Int -> Time
+fromSamples samp = Time samp
+
+fromMillisec :: Int -> Time
+fromMillisec ms = Time (round (fromIntegral ms * (44.100 :: Double)))
+
+addTime :: Time -> Time -> Time
+addTime (Time a) (Time b) = Time (a + b)
 
 
 type MIDIControl m i o = Control m (Either MIDI.MidiMessage i) (Either MIDI.MidiMessage o)
@@ -95,7 +107,7 @@ countEvents = Control $ \out -> do
         writeRef countref $! count+1
         out (count,i)
 
-longPress :: (MonadRefs m, MonadSched m) => Word32 -> Control m Bool LongPress
+longPress :: (MonadRefs m, MonadSched m) => Time -> Control m Bool LongPress
 longPress delay = go . countEvents
     where
     go = Control $ \out -> do

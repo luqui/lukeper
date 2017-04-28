@@ -13,18 +13,15 @@ import Data.Foldable (toList)
 
 import Control.Monad.Trans.Maybe
 import Control.Monad.Trans.State
-import Data.Word
 
 import Control
-
-type Time = Word32
 
 data SeqState m i o = SeqState
     { seqMidiDevs    :: Devs
     , seqController  :: Either MIDI.MidiMessage o -> m ()
     , seqTimedEvents :: Map.Map Time (m ())
     , seqCondEvents  :: Seq.Seq (i -> m (Maybe ())) -- Just () to remove, Nothing to keep
-    , seqCurrentTime :: Word32
+    , seqCurrentTime :: Time
     }
 
 newtype SequencerT i o m a 
@@ -55,7 +52,7 @@ bootSequencerT :: (MonadIO m)
                => Devs -> MIDIControl (SequencerT i o m) o i 
                -> m (SeqState (SequencerT i o m) i o)
 bootSequencerT devs ctrl = do
-    time0 <- liftIO (MIDI.currentTime (fst devs))
+    time0 <- liftIO $ fromMillisec . fromIntegral <$> MIDI.currentTime (fst devs)
     let state0 = SeqState 
             { seqMidiDevs = devs
             -- When we boot, we haven't set up any event handlers yet, so we just ignore
@@ -105,7 +102,7 @@ processEvent i = SequencerT $ do
 
 tick :: (MonadIO m) => SequencerT i o m ()
 tick = SequencerT $ do
-    time <- liftIO . MIDI.currentTime . fst =<< gets seqMidiDevs
+    time <- liftIO . fmap (fromMillisec . fromIntegral) . MIDI.currentTime . fst =<< gets seqMidiDevs
     -- run timed events
     iterWhileM (guards ((<= time) . fst . fst) . Map.minViewWithKey <$> gets seqTimedEvents) $
         \((t,action),map') -> do

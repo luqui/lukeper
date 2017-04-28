@@ -166,10 +166,6 @@ startLooper = do
             , csSends = Array.listArray (1,8) (repeat 0)
             } 
 
-    -- TODO, I think we can use a single MonadPlus for this, e.g.
-    --    APC.MatrixButton coord APC.PressDown <- e
-    --    ...
-    -- and mzero means "doesn't fire"
     S.whenever $ \e -> do
         APC.OutMatrixButton (APC.Coord (i,j)) PressDown <- return e
         lift . schedule . (Just (APC.Coord (i,j)),) $ query (\s -> transChannel i (tapChannel i j (csPosition s)))
@@ -214,9 +210,9 @@ startLooper = do
         lift $ do
             quant <- lift $ gets csQuantization
             break <- lift $ gets csBreak
-            let delay | Just (bar, _) <- quant, not break = (1000*bar) `div` (16*44100)  -- wait 1 sixteenth to break for a final hit
-                      | otherwise                         = 0
-            after (fromIntegral delay) . activateTransition . query $ \state ->
+            let delay | Just (bar, _) <- quant, not break = fromMillisec ((1000*bar) `div` (16*44100)) -- wait 1 sixteenth to break for a final hit
+                      | otherwise                         = fromMillisec 0
+            after delay . activateTransition . query $ \state ->
                 if not (csBreak state) then
                     Transition (\s -> (s { csBreak = True }, return (), return ()))
                 else
@@ -236,7 +232,7 @@ startLooper = do
         -- because of the way Sequencer.processEvents works. It will not correctly
         -- clear conditional events.  So we use S.after 0 to convert into a timed
         -- event, which works correctly.
-        lift . after 0 $ do
+        lift . after (fromMillisec 0) $ do
             S.rebootSequencerT APC.apc40Raw
             startLooper
 
@@ -336,9 +332,9 @@ runLooper winsize = do
             M.when clock $ S.send APC.InClock
              
             if bar then
-                S.send (APC.InMetronome True) >> after 200 (S.send (APC.InMetronome False))
+                S.send (APC.InMetronome True) >> after (fromMillisec 200) (S.send (APC.InMetronome False))
             else if beat then
-                S.send (APC.InMetronome True) >> after 100 (S.send (APC.InMetronome False))
+                S.send (APC.InMetronome True) >> after (fromMillisec 100) (S.send (APC.InMetronome False))
             else return ()
 
             return bar

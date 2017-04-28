@@ -111,7 +111,7 @@ rgbButton note = Control $ \out -> do
     getevents _ _ = return ()
 
 longRGBButton :: (MonadRefs m, MonadSched m) => Int -> MIDIControl m RGBColorState LongPress
-longRGBButton note = right (longPress 500) . rgbButton note
+longRGBButton note = right (longPress (fromMillisec 500)) . rgbButton note
 
 inputOnlyButton :: (Monad m) => Int -> MIDIControl m Void Bool
 inputOnlyButton note  = Control $ \out -> do
