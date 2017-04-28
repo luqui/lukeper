@@ -9,7 +9,6 @@ import qualified System.MIDI as MIDI
 import Control.Monad (mzero)
 import Control.Monad.IO.Class (MonadIO(..))
 import Control.Monad.Trans.Class (MonadTrans, lift)
-import Data.Foldable (toList)
 
 import Control.Monad.Trans.Maybe
 import Control.Monad.Trans.State
@@ -103,19 +102,28 @@ processEvent i = SequencerT $ do
 tick :: (MonadIO m) => SequencerT i o m ()
 tick = SequencerT $ do
     time <- liftIO . fmap (fromMillisec . fromIntegral) . MIDI.currentTime . fst =<< gets seqMidiDevs
-    -- run timed events
-    iterWhileM (guards ((<= time) . fst . fst) . Map.minViewWithKey <$> gets seqTimedEvents) $
-        \((t,action),map') -> do
-            -- Pretend the event happened right on time (questionable)
-            modify $ \s -> s { seqCurrentTime = t, seqTimedEvents = map' }
-            getSequencerT action
-    modify $ \s -> s { seqCurrentTime = time }
+    getSequencerT $ do
+        loopWhileM (nextEvent time)
+        processMidiEvents
 
-    -- process incoming MIDI events
+processMidiEvents :: (MonadIO m) => SequencerT i o m ()
+processMidiEvents = SequencerT $ do
     messages <- liftIO . (fmap.fmap) (\(MIDI.MidiEvent _ m) -> m) . MIDI.getEvents . fst 
                     =<< gets seqMidiDevs
     ctrl <- gets seqController
     getSequencerT $ mapM_ (ctrl . Left) messages
+
+nextEvent :: (Monad m) => Time -> SequencerT i o m Bool
+nextEvent tmax = SequencerT $ do
+    view <- Map.minViewWithKey <$> gets seqTimedEvents
+    case view of
+        Just ((t,action),map') | t <= tmax -> do
+            modify $ \s -> s { seqCurrentTime = t, seqTimedEvents = map' }
+            getSequencerT action
+            return True
+        _ -> do
+            modify $ \s -> s { seqCurrentTime = tmax }
+            return False
 
 -- The general pattern of using when/whenever is:
 -- when $ \e -> do
@@ -134,20 +142,7 @@ send o = SequencerT $ do
     ctrl <- gets seqController
     getSequencerT (ctrl (Right o))
 
-iterWhileM :: (Monad m) => m (Maybe a) -> (a -> m ()) -> m ()
-iterWhileM cond action = do
-    cond >>= \case
-        Nothing -> return ()
-        Just x -> action x >> iterWhileM cond action
-
-guards :: (a -> Bool) -> Maybe a -> Maybe a
-guards p (Just x) | p x = Just x
-guards _ _ = Nothing
-
-findIndexLM :: (Foldable f, Monad m) => (a -> m Bool) -> f a -> m (Maybe Int)
-findIndexLM p = go . zip [0..] . toList
-    where
-    go ((i,x):xs) = p x >>= \case
-        True -> return (Just i)
-        False -> go xs
-    go [] = return Nothing
+loopWhileM :: (Monad m) => m Bool -> m ()
+loopWhileM action = do
+    r <- action 
+    if r then loopWhileM action else return ()
