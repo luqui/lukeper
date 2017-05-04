@@ -17,7 +17,7 @@ import Control.Monad (forM, forM_)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.State (StateT(..), get, gets, put, modify, runStateT)
-import Control.Monad.Trans.Writer (Writer, tell, runWriter)
+import qualified Control.Monad.Trans.RWS as RWS
 import Data.Maybe (catMaybes, isNothing)
 import Data.Monoid (Monoid(..))
 
@@ -68,7 +68,6 @@ data Mix = Mix Time InputChannel [MixChannel]
 
 data ControlState = ControlState
     { csChannels :: Array.Array Int Channel
-    , csPosition :: Time
     , csQuantization :: Maybe (TimeDiff, Time)   -- period, phase  (i.e. (period*n + phase) is a barline)
     , csLoops :: Array.Array APC.Coord Loop.Loop
     , csQueue :: [(Maybe APC.Coord, Transition ControlState ())]  -- reversed
@@ -112,7 +111,7 @@ instance (Monad m) => Monoid (MonadMonoid m) where
     mappend (MonadMonoid m) (MonadMonoid m') = MonadMonoid (m >> m')
 
 
-newtype Transition s a = Transition { runTransition :: StateT s (Writer (MonadMonoid LooperM, MonadMonoid LooperM)) a }
+newtype Transition s a = Transition { runTransition :: RWS.RWS Time (MonadMonoid LooperM, MonadMonoid LooperM) s a }
     deriving (Functor, Applicative, Monad)
 
 instance Monoid (Transition s ()) where
@@ -120,23 +119,33 @@ instance Monoid (Transition s ()) where
     mappend a b = a >> b
 
 transLights :: LooperM () -> Transition s ()
-transLights m = Transition . lift $ tell (MonadMonoid m, mempty)
+transLights m = Transition $ RWS.tell (MonadMonoid m, mempty)
 
 transActions :: LooperM () -> Transition s ()
-transActions m = Transition . lift $ tell (mempty, MonadMonoid m)
+transActions m = Transition $ RWS.tell (mempty, MonadMonoid m)
 
 -- XXX todo some concept duplication here, use MonadState?
 transModify :: (s -> s) -> Transition s ()
-transModify = Transition . modify
+transModify = Transition . RWS.modify
 
 transPut :: s -> Transition s ()
-transPut = Transition . put
+transPut = Transition . RWS.put
 
 transGet :: Transition s s
-transGet = Transition get
+transGet = Transition RWS.get
 
 transGets :: (s -> a) -> Transition s a
-transGets = Transition . gets
+transGets = Transition . RWS.gets
+
+transTime :: Transition s Time
+transTime = Transition RWS.ask
+
+rwsMapState :: (Functor m) => (s' -> s) -> (s -> s' -> s') -> RWS.RWST r w s m a -> RWS.RWST r w s' m a
+rwsMapState getf putf m = RWS.RWST $ \r s -> 
+    fmap (\(a, s', w) -> (a, putf s' s, w)) (RWS.runRWST m r (getf s))
+
+transMapState :: (s' -> s) -> (s -> s' -> s') -> Transition s a -> Transition s' a
+transMapState getf putf = Transition . rwsMapState getf putf . runTransition
 
 
 playingColor,recordingColor,stoppedColor,offColor :: APC.RGBColorState 
@@ -147,14 +156,12 @@ offColor       = APC.RGBOff
 
 
 transChannel :: Int -> Transition Channel a -> Transition ControlState a
-transChannel i t = Transition . StateT $ \s -> do
-        (x, ch') <- runStateT (runTransition t) (csChannels s Array.! i)
-        return (x, s { csChannels = csChannels s Array.// [(i,ch')] })
+transChannel i = transMapState ((Array.! i) . csChannels) (\ch' s -> s { csChannels = csChannels s Array.// [(i,ch')] })
 
 transAllChannels :: Transition Channel () -> Transition ControlState ()
-transAllChannels t = Transition $ do
-    channels <- gets csChannels
-    forM_ (Array.indices channels) $ \i -> runTransition (transChannel i t)
+transAllChannels t = do
+    channels <- transGets csChannels
+    forM_ (Array.indices channels) $ \i -> transChannel i t
 
 restartChannel :: Time -> Transition Channel ()
 restartChannel phase = transModify $ \ch -> 
@@ -169,7 +176,6 @@ matches = not . null
 startLooper :: LooperM ()
 startLooper = do
     -- setup state
-    time0 <- S.getCurrentTime
     lift $ do
         loops <- Array.array (APC.Coord (1,1), APC.Coord (8,5)) <$> 
                  sequence [ (APC.Coord (i,j),) <$> liftIO Loop.newLoop | i <- [1..8], j <- [1..5] ]
@@ -180,7 +186,6 @@ startLooper = do
                         , chLevel = 1
                         , chMute = False
                         }
-            , csPosition = time0
             , csQuantization = Nothing
             , csLoops = loops
             , csQueue = []
@@ -191,9 +196,8 @@ startLooper = do
 
     S.whenever $ \e -> do
         APC.OutMatrixButton (APC.Coord (i,j)) PressDown <- return e
-        lift . schedule . (Just (APC.Coord (i,j)),) $ do
-            pos <- transGets csPosition 
-            transChannel i (tapChannel i j pos)
+        lift . schedule . (Just (APC.Coord (i,j)),) $
+            transChannel i . tapChannel i j =<< transTime
     S.whenever $ \e -> do
         APC.OutMatrixButton (APC.Coord (i,j)) PressLong <- return e
         lift . activateTransition $ transChannel i . (stopActive i >>) $ do
@@ -216,15 +220,15 @@ startLooper = do
     S.whenever $ \e -> do
         APC.OutTempoChange dt <- return e
         lift $ do
-            pos <- lift $ gets csPosition
             activateTransition $ do
+                time <- transTime
                 let stretch = 1.01^^(-dt)
                 transModify (\s -> s
                    { csLoops = fmap (Loop.stretch stretch) (csLoops s)
                    , csQuantization = fmap (\(period, phase) -> 
-                        (stretch *^ period, stretchPhase stretch pos phase)) (csQuantization s)
+                        (stretch *^ period, stretchPhase stretch time phase)) (csQuantization s)
                    , csChannels = fmap (\ch -> ch { 
-                        chActiveSlot = (fmap.second) (stretchActiveSlot stretch pos) (chActiveSlot ch) }) (csChannels s)
+                        chActiveSlot = (fmap.second) (stretchActiveSlot stretch time) (chActiveSlot ch) }) (csChannels s)
                    })
     S.whenever $ \e -> do
         APC.OutUnmuteButton ch True <- return e
@@ -244,9 +248,10 @@ startLooper = do
                 if not (csBreak state) then
                     transModify (\s -> s { csBreak = True })
                 else do
-                    transAllChannels (restartChannel (csPosition state))
+                    time <- transTime
+                    transAllChannels (restartChannel time)
                     transModify (\s -> s { csBreak = False
-                                         , csQuantization = fmap (\(l,_) -> (l, csPosition s)) (csQuantization s) })
+                                         , csQuantization = fmap (\(l,_) -> (l, time)) (csQuantization s) })
     S.whenever $ \e -> do
         APC.OutDial dial val <- return e
         lift $ do
@@ -302,8 +307,9 @@ maybeSetQuantization i j = do
         setQuantization loopsize
 
 setQuantization :: TimeDiff -> LooperM ()
-setQuantization cycleLength =
-    lift $ modify (\s -> s { csQuantization = Just (qlength, csPosition s) })
+setQuantization cycleLength = do
+    time <- S.getCurrentTime
+    lift $ modify (\s -> s { csQuantization = Just (qlength, time) })
     where
     -- If we have long loops, half/double until the tempo is reasonable.
     -- This should work for most types of music.
@@ -325,7 +331,8 @@ schedule t = lift $ modify (\s -> s { csQueue = t : csQueue s })
 activateTransition :: Transition ControlState a -> LooperM a
 activateTransition t = do
     state <- lift get
-    let ((x,state'), (MonadMonoid lights, MonadMonoid actions)) = runWriter (runStateT (runTransition t) state)
+    time <- S.getCurrentTime
+    let (x, state', (MonadMonoid lights, MonadMonoid actions)) = RWS.runRWS (runTransition t) time state
     lift $ put state'
     lights
     actions
@@ -351,17 +358,17 @@ renderMix = do
 runLooper :: Int -> LooperM Mix
 runLooper winsize = do
     state <- lift get
-    let pos = csPosition state
+    time <- S.getCurrentTime
 
     runqueue <- case (csBreak state, csQuantization state) of
         (True, _) -> return False
         (False, Nothing) -> return True
         (False, Just (period, phase)) -> do
-            let bar = quantPoint period phase pos
-            let beat = quantPoint (period ^/ 4) phase pos -- TODO more flexible than 4 beats/bar
+            let bar = quantPoint period phase time
+            let beat = quantPoint (period ^/ 4) phase time -- TODO more flexible than 4 beats/bar
             -- XXX "24 times per quarter note" but subdiv doesn't match, seems to be 12 times 
             -- per quarter according to the APC.
-            let clock = quantPoint (period ^/ (2*24)) phase pos
+            let clock = quantPoint (period ^/ (2*24)) phase time
             M.when clock $ S.send APC.InClock
              
             if bar then
@@ -377,16 +384,14 @@ runLooper winsize = do
         forM_ (reverse queue) (activateTransition . snd)
 
     -- It is important that renderMix reads the *new* state after running the queue.
-    mix <- renderMix
-    lift $ modify (\s -> s { csPosition = csPosition s ^+^ fromSamples winsize })
-    return mix
+    renderMix
 
     where
     quantPoint :: TimeDiff -> Time -> Time -> Bool
-    quantPoint period phase pos = thisBar /= lastBar
+    quantPoint period phase time = thisBar /= lastBar
         where
-        thisBar = floor (ratio (pos ^-^ phase) period) :: Int 
-        lastBar = floor (ratio ((pos ^-^ phase) ^-^ fromSamples winsize) period)
+        thisBar = floor (ratio (time ^-^ phase) period) :: Int 
+        lastBar = floor (ratio ((time ^-^ phase) ^-^ fromSamples winsize) period)
 
 type IOBuffers = (IOArray.IOUArray Int Double, IOArray.IOUArray Int Double)
 
