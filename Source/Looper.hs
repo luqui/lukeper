@@ -6,18 +6,19 @@ import Prelude hiding (break, (>>))
 
 import qualified Control.Exception as Exc
 import qualified Control.Monad as M
-import qualified Data.Array as Array
-import qualified Data.Array.IO as IOArray
 import qualified Data.Time.Clock as Clock
+import qualified Data.Vector.Unboxed as Vector
+import qualified Data.Vector.Unboxed.Mutable as MVector
 import qualified Foreign.Ptr as Foreign
 import qualified System.IO as IO
+
 
 import Control.Arrow (second)
 import Control.Monad (forM, forM_)
 import Control.Monad.IO.Class (liftIO)
+import Control.Monad.Primitive (RealWorld)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.State (StateT(..), get, gets, put, modify, runStateT)
-import qualified Control.Monad.Trans.RWS as RWS
 import Data.Maybe (catMaybes, isNothing)
 import Data.Monoid (Monoid(..))
 
@@ -27,6 +28,8 @@ import Foreign.StablePtr
 import Foreign.Storable
 
 import qualified APC40mkII_Raw as APC
+import qualified Control.Monad.Trans.RWS as RWS
+import qualified Data.Array as Array
 import qualified Foreign.C.String as C
 import qualified Loop as Loop
 import qualified Sequencer as S
@@ -43,6 +46,8 @@ foreign export ccall hs_looper_main
     -> IO ()
 foreign export ccall hs_looper_uilog :: StablePtr LooperState -> IO C.CString
 foreign export ccall hs_looper_exit :: StablePtr LooperState -> IO ()
+
+type MVector = MVector.MVector RealWorld
 
 type ControlIn = APC.APCOutMessage
 type ControlOut = APC.APCInMessage
@@ -393,7 +398,7 @@ runLooper winsize = do
         thisBar = floor (ratio (time ^-^ phase) period) :: Int 
         lastBar = floor (ratio ((time ^-^ phase) ^-^ fromSamples winsize) period)
 
-type IOBuffers = (IOArray.IOUArray Int Double, IOArray.IOUArray Int Double)
+type IOBuffers = (MVector Double, MVector Double)
 
 data LooperState = LooperState 
     { lsMidiDevs    :: Devs
@@ -431,7 +436,7 @@ hs_looper_main state window input output channels = wrapErrors "hs_looper_main" 
 makeBuffers :: Int -> IO IOBuffers
 makeBuffers window = (,) <$> buf <*> buf
     where
-    buf = IOArray.newArray (0, window-1) 0
+    buf = MVector.new window
 
 getBuffers :: LooperState -> Int -> IO IOBuffers
 getBuffers state window = do
@@ -452,19 +457,21 @@ hsLooperMain looperstate window _inchannels outchannels channels = do
 
     inbuf <- peekElemOff channels 0
     (inbufarray, outbufarray) <- getBuffers looperstate window
-    forM_ [0..window-1] $ \i -> IOArray.writeArray inbufarray i =<< realToFrac <$> peekElemOff inbuf i
-    forM_ [0..window-1] $ \i -> IOArray.writeArray outbufarray i 0
+    forM_ [0..window-1] $ \i -> MVector.unsafeWrite inbufarray i =<< realToFrac <$> peekElemOff inbuf i
+    forM_ [0..window-1] $ \i -> MVector.unsafeWrite outbufarray i 0
+
+    inbufvector <- Vector.freeze inbufarray
 
     forM_ channelmixes $ \MixChannel{..} -> 
         case mcState of
-            Recording -> Loop.append mcLoop (error "position is ignored, huh") inbufarray
+            Recording -> Loop.append mcLoop (error "position is ignored, huh") inbufvector
             Playing phase -> Loop.play mcLoop (toSamples (time ^-^ phase)) mcLevel outbufarray
 
     mainoutbuf <- peekElemOff channels 0
     sendbufs <- mapM (peekElemOff channels) [1..min (outchannels-1) 8]
     
     forM_ [0..window-1] $ \i -> do
-        sample <- realToFrac <$> IOArray.readArray outbufarray i
+        sample <- realToFrac <$> MVector.unsafeRead outbufarray i
         pokeElemOff mainoutbuf i sample
         forM_ (zip [1..8] sendbufs) $ \(sendix, sendbuf) -> 
             pokeElemOff sendbuf i ((icSends inputmix Array.! sendix) * sample)
