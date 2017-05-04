@@ -125,6 +125,19 @@ transLights m = Transition . lift $ tell (MonadMonoid m, mempty)
 transActions :: LooperM () -> Transition s ()
 transActions m = Transition . lift $ tell (mempty, MonadMonoid m)
 
+-- XXX todo some concept duplication here, use MonadState?
+transModify :: (s -> s) -> Transition s ()
+transModify = Transition . modify
+
+transPut :: s -> Transition s ()
+transPut = Transition . put
+
+transGet :: Transition s s
+transGet = Transition get
+
+transGets :: (s -> a) -> Transition s a
+transGets = Transition . gets
+
 
 playingColor,recordingColor,stoppedColor,offColor :: APC.RGBColorState 
 playingColor   = APC.RGBPulsing APC.Subdiv4 (APC.velToRGBColor 22) (APC.velToRGBColor 23)
@@ -144,7 +157,7 @@ transAllChannels t = Transition $ do
     forM_ (Array.indices channels) $ \i -> runTransition (transChannel i t)
 
 restartChannel :: Int -> Transition Channel ()
-restartChannel phase = Transition . modify $ \ch -> 
+restartChannel phase = transModify $ \ch -> 
     ch { chActiveSlot = fmap (\(n, slotstate) ->
             (n, case slotstate of
                     Playing _ -> Playing phase
@@ -177,35 +190,35 @@ startLooper = do
 
     S.whenever $ \e -> do
         APC.OutMatrixButton (APC.Coord (i,j)) PressDown <- return e
-        lift . schedule . (Just (APC.Coord (i,j)),) . Transition $ do
-            pos <- gets csPosition 
-            runTransition $ transChannel i (tapChannel i j pos)
+        lift . schedule . (Just (APC.Coord (i,j)),) $ do
+            pos <- transGets csPosition 
+            transChannel i (tapChannel i j pos)
     S.whenever $ \e -> do
         APC.OutMatrixButton (APC.Coord (i,j)) PressLong <- return e
-        lift . activateTransition $ transChannel i . (stopActive i >>) . Transition $ do
-            modify (\ch -> ch { chSlots = chSlots ch Array.// [(j, False)] })
-            runTransition . transLights $ S.send (APC.InMatrixButton (APC.Coord (i,j)) offColor)
-            runTransition . transActions $ do
+        lift . activateTransition $ transChannel i . (stopActive i >>) $ do
+            transModify (\ch -> ch { chSlots = chSlots ch Array.// [(j, False)] })
+            transLights $ S.send (APC.InMatrixButton (APC.Coord (i,j)) offColor)
+            transActions $ do
                 do freshLoop i j
                    clearQueue (APC.Coord (i,j))
     S.whenever $ \e -> do
         APC.OutFader i level <- return e
         lift $
             if | 1 <= i && i <= 8 -> 
-                activateTransition . transChannel i . Transition $ 
-                    modify (\ch -> ch { chLevel = level })
+                activateTransition . transChannel i $ 
+                    transModify (\ch -> ch { chLevel = level })
                | i == 9 ->
-                activateTransition . Transition $
-                    modify (\cs -> cs { csLevel = level })
+                activateTransition $
+                    transModify (\cs -> cs { csLevel = level })
                | otherwise ->
                     return ()
     S.whenever $ \e -> do
         APC.OutTempoChange dt <- return e
         lift $ do
             pos <- lift $ gets csPosition
-            activateTransition . Transition $ do
+            activateTransition $ do
                 let stretch = 1.01^^(-dt)
-                modify (\s -> s
+                transModify (\s -> s
                    { csLoops = fmap (Loop.stretch stretch) (csLoops s)
                    , csQuantization = fmap (\(period, phase) -> 
                         (round (fromIntegral period * stretch), stretchPhase stretch pos phase)) (csQuantization s)
@@ -214,10 +227,10 @@ startLooper = do
                    })
     S.whenever $ \e -> do
         APC.OutUnmuteButton ch True <- return e
-        lift . activateTransition . transChannel ch . Transition $ do
-            s <- get
-            put (s { chMute = not (chMute s) })
-            runTransition . transLights $ S.send (APC.InUnmuteButton ch (chMute s))
+        lift . activateTransition . transChannel ch $ do
+            s <- transGet
+            transPut (s { chMute = not (chMute s) })
+            transLights $ S.send (APC.InUnmuteButton ch (chMute s))
     S.whenever $ \e -> do
         APC.OutStopAllButton True <- return e
         lift $ do
@@ -225,14 +238,14 @@ startLooper = do
             break <- lift $ gets csBreak
             let delay | Just (bar, _) <- quant, not break = fromMillisec ((1000*fromIntegral bar) / (16*44100)) -- wait 1 sixteenth to break for a final hit
                       | otherwise                         = fromMillisec 0
-            after delay . activateTransition . Transition $ do
-                state <- get
+            after delay . activateTransition $ do
+                state <- transGet
                 if not (csBreak state) then
-                    modify (\s -> s { csBreak = True })
+                    transModify (\s -> s { csBreak = True })
                 else do
-                    runTransition $ transAllChannels (restartChannel (csPosition state))
-                    modify (\s -> s { csBreak = False
-                                    , csQuantization = fmap (\(l,_) -> (l, csPosition s)) (csQuantization s) })
+                    transAllChannels (restartChannel (csPosition state))
+                    transModify (\s -> s { csBreak = False
+                                         , csQuantization = fmap (\(l,_) -> (l, csPosition s)) (csQuantization s) })
     S.whenever $ \e -> do
         APC.OutDial dial val <- return e
         lift $ do
@@ -258,26 +271,26 @@ clearQueue coord = do
     lift $ modify (\s -> s { csQueue = filter ((Just coord /=) . fst) (csQueue s) })
 
 tapChannel :: Int -> Int -> Int -> Transition Channel ()
-tapChannel i j pos = Transition $ do
-    ch <- get
+tapChannel i j pos = do
+    ch <- transGet
     if | Just (j', Recording) <- chActiveSlot ch,
          j' == j -> do 
-            put (ch { chActiveSlot = Just (j, Playing pos) })
-            runTransition . transLights $ S.send (APC.InMatrixButton (APC.Coord (i,j)) playingColor)
-            runTransition . transActions $ maybeSetQuantization i j
+            transPut (ch { chActiveSlot = Just (j, Playing pos) })
+            transLights $ S.send (APC.InMatrixButton (APC.Coord (i,j)) playingColor)
+            transActions $ maybeSetQuantization i j
        | Just (j', Playing _) <- chActiveSlot ch,
          j' == j -> do
-            runTransition (stopActive i)
+            stopActive i
        | chSlots ch Array.! j -> do
-            runTransition (stopActive i)
-            put (ch { chActiveSlot = Just (j, Playing pos) })
-            runTransition . transLights $ S.send (APC.InMatrixButton (APC.Coord (i,j)) playingColor)
+            stopActive i
+            transPut (ch { chActiveSlot = Just (j, Playing pos) })
+            transLights $ S.send (APC.InMatrixButton (APC.Coord (i,j)) playingColor)
        -- not (chSlots ch Array.! j)
        | otherwise -> do
-            runTransition (stopActive i) 
-            put (ch { chSlots = chSlots ch Array.// [(j, True)], chActiveSlot = Just (j, Recording) })
-            runTransition . transLights $ S.send (APC.InMatrixButton (APC.Coord (i,j)) recordingColor)
-            runTransition . transActions $ freshLoop i j
+            stopActive i
+            transPut (ch { chSlots = chSlots ch Array.// [(j, True)], chActiveSlot = Just (j, Recording) })
+            transLights $ S.send (APC.InMatrixButton (APC.Coord (i,j)) recordingColor)
+            transActions $ freshLoop i j
 
 maybeSetQuantization :: Int -> Int -> LooperM ()
 maybeSetQuantization i j = do
@@ -298,11 +311,11 @@ setQuantization cycleLength =
     minlength = 44100    -- 1 second  (240bpm)
 
 stopActive :: Int -> Transition Channel ()
-stopActive i = Transition $ do
-    ch <- get
+stopActive i = do
+    ch <- transGet
     if | Just (j, _) <- chActiveSlot ch -> do
-            put (ch { chActiveSlot = Nothing })
-            runTransition . transLights $ S.send (APC.InMatrixButton (APC.Coord (i,j)) stoppedColor)
+            transPut (ch { chActiveSlot = Nothing })
+            transLights $ S.send (APC.InMatrixButton (APC.Coord (i,j)) stoppedColor)
        | otherwise  -> return ()
 
 schedule :: (Maybe APC.Coord, Transition ControlState ()) -> LooperM ()
