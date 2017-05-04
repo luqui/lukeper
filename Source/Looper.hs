@@ -54,7 +54,6 @@ data MixChannel = MixChannel
     { mcLoop :: Loop.Loop
     , mcLevel :: Double
     , mcState :: ActiveSlotState
-    , mcPosition :: Int
     , mcSends :: Sends
     }
 
@@ -63,7 +62,7 @@ data InputChannel = InputChannel
     , icSends :: Sends
     }
 
-data Mix = Mix InputChannel [MixChannel]
+data Mix = Mix Time InputChannel [MixChannel]
 
 
 data ControlState = ControlState
@@ -308,12 +307,11 @@ renderMix = do
                         { mcLoop = csLoops state Array.! APC.Coord (i,j)
                         , mcLevel = csLevel state * chLevel ch
                         , mcState = chstate
-                        , mcPosition = csPosition state
                         , mcSends = csSends state
                         })
                | otherwise -> Nothing
-    return $ 
-        if csBreak state then Mix inputChannel [] else Mix inputChannel loopChannels
+    time <- S.getCurrentTime
+    return $ Mix time inputChannel (if csBreak state then [] else loopChannels)
 
 runLooper :: Int -> LooperM Mix
 runLooper winsize = do
@@ -345,7 +343,6 @@ runLooper winsize = do
 
     -- It is important that renderMix reads the *new* state after running the queue.
     mix <- renderMix
-    lift $ modify (\s -> s { csPosition = csPosition s + winsize })
     return mix
 
     where
@@ -355,6 +352,7 @@ type IOBuffers = (IOArray.IOUArray Int Double, IOArray.IOUArray Int Double)
 
 data LooperState = LooperState 
     { lsMidiDevs    :: Devs
+    , lsStartTime   :: Time
     , lsFrame       :: Int -> LooperM Mix
     , lsSeqState    :: IORef (S.SeqState LooperM ControlIn ControlOut, ControlState)
     , lsBuffers     :: IORef (Int, IOBuffers)
@@ -363,10 +361,18 @@ data LooperState = LooperState
 hs_looper_init :: IO (StablePtr LooperState)
 hs_looper_init = wrapErrors "hs_looper_init" $ do
     devs <- openDevs
-    (((), seqstate), superstate) <- runStateT (S.runSequencerT startLooper =<< S.bootSequencerT devs APC.apc40Raw) (error "first order of business must be to set state")
+    let badstate = error "first order of business must be to set state"
+    let startlooper = do
+            () <- startLooper
+            S.getCurrentTime
+    ((time0, seqstate), superstate) <- 
+        runStateT 
+            (S.runSequencerT startlooper =<< S.bootSequencerT devs APC.apc40Raw) 
+            badstate
     seqstateref <- newIORef (seqstate, superstate)
     buffers <- newIORef =<< (256,) <$> makeBuffers 256  -- a guess, will be reinitialized if incorrect
     newStablePtr $ LooperState { lsMidiDevs = devs
+                               , lsStartTime = time0
                                , lsFrame = runLooper
                                , lsSeqState = seqstateref
                                , lsBuffers = buffers
@@ -395,10 +401,11 @@ getBuffers state window = do
 hsLooperMain :: LooperState -> Int -> Int -> Int -> Foreign.Ptr (Foreign.Ptr Float) -> IO ()
 hsLooperMain looperstate window _inchannels outchannels channels = do
     (seqstate, superstate) <- readIORef (lsSeqState looperstate)
-    ((Mix inputmix channelmixes, seqstate'), superstate') 
-        <- runStateT (S.runSequencerT (S.tick >> lsFrame looperstate window) seqstate) superstate
+    ((Mix time inputmix channelmixes, seqstate'), superstate') 
+        <- runStateT (S.runSequencerT (S.tick window >> lsFrame looperstate window) seqstate) superstate
     writeIORef (lsSeqState looperstate) (seqstate', superstate')
-    
+    let position = diffTimeSamples time (lsStartTime looperstate) 
+
     inbuf <- peekElemOff channels 0
     (inbufarray, outbufarray) <- getBuffers looperstate window
     forM_ [0..window-1] $ \i -> IOArray.writeArray inbufarray i =<< realToFrac <$> peekElemOff inbuf i
@@ -406,8 +413,8 @@ hsLooperMain looperstate window _inchannels outchannels channels = do
 
     forM_ channelmixes $ \MixChannel{..} -> 
         case mcState of
-            Recording -> Loop.append mcLoop mcPosition inbufarray
-            Playing phase -> Loop.play mcLoop (mcPosition - phase) mcLevel outbufarray
+            Recording -> Loop.append mcLoop position inbufarray
+            Playing phase -> Loop.play mcLoop (position - phase) mcLevel outbufarray
 
     mainoutbuf <- peekElemOff channels 0
     sendbufs <- mapM (peekElemOff channels) [1..min (outchannels-1) 8]

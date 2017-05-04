@@ -99,9 +99,9 @@ processEvent i = SequencerT $ do
             Nothing -> (action Seq.<|) <$> go hs
     go _ = error "impossible non-matching view pattern"
 
-tick :: (MonadIO m) => SequencerT i o m ()
-tick = SequencerT $ do
-    time <- liftIO . fmap (fromMillisec . fromIntegral) . MIDI.currentTime . fst =<< gets seqMidiDevs
+tick :: (MonadIO m) => Int -> SequencerT i o m ()
+tick window = SequencerT $ do
+    time <- addTime (fromSamples window) <$> getSequencerT getCurrentTime
     getSequencerT $ do
         loopWhileM (nextEvent time)
         processMidiEvents
@@ -124,6 +124,9 @@ nextEvent tmax = SequencerT $ do
         _ -> do
             modify $ \s -> s { seqCurrentTime = tmax }
             return False
+
+getCurrentTime :: (Monad m) => SequencerT i o m Time
+getCurrentTime = SequencerT $ gets seqCurrentTime
 
 -- The general pattern of using when/whenever is:
 -- when $ \e -> do

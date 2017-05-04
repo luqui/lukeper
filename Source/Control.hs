@@ -93,6 +93,9 @@ fromMillisec ms = Time (round (fromIntegral ms * (44.100 :: Double)))
 addTime :: Time -> Time -> Time
 addTime (Time a) (Time b) = Time (a + b)
 
+diffTimeSamples :: Time -> Time -> Int
+diffTimeSamples (Time a) (Time b) = a - b
+
 
 type MIDIControl m i o = Control m (Either MIDI.MidiMessage i) (Either MIDI.MidiMessage o)
 
