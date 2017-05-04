@@ -51,7 +51,7 @@ bootSequencerT :: (MonadIO m)
                => Devs -> MIDIControl (SequencerT i o m) o i 
                -> m (SeqState (SequencerT i o m) i o)
 bootSequencerT devs ctrl = do
-    time0 <- liftIO $ fromMillisec . fromIntegral <$> MIDI.currentTime (fst devs)
+    time0 <- liftIO $ add arbitraryPoint . fromMillisec . fromIntegral <$> MIDI.currentTime (fst devs)
     let state0 = SeqState 
             { seqMidiDevs = devs
             -- When we boot, we haven't set up any event handlers yet, so we just ignore
@@ -101,7 +101,7 @@ processEvent i = SequencerT $ do
 
 tick :: (MonadIO m) => Int -> SequencerT i o m ()
 tick window = SequencerT $ do
-    time <- addTime (fromSamples window) <$> getSequencerT getCurrentTime
+    time <- (`add` fromSamples window) <$> getSequencerT getCurrentTime
     getSequencerT $ do
         loopWhileM (nextEvent time)
         processMidiEvents

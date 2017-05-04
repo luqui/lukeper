@@ -63,10 +63,10 @@ class (Monad m) => MonadSched m where
     -- millisecs
     at :: Time -> m () -> m ()
 
-after :: (MonadSched m) => Time -> m () -> m ()
+after :: (MonadSched m) => TimeDiff -> m () -> m ()
 after dt action = do
     t <- now
-    at (addTime t dt) action
+    at (add t dt) action
 
 instance MonadRefs IO where
     type Ref IO = IORef.IORef
@@ -81,20 +81,35 @@ instance (MonadRefs m) => MonadRefs (StateT.StateT s m) where
     writeRef r = lift . writeRef r
 
 
-newtype Time = Time Int  -- samples at 44100
-    deriving (Eq, Ord)
+-- Unbased makes sure that none of our calculations depend on an absolute notion of "a"
+-- (assuming "arbitraryPoint" is used appropriately -- essentially it may only be used once)
+newtype Unbased a = Unbased a
+    deriving (Eq, Ord, Show)
 
-fromSamples :: Int -> Time
-fromSamples samp = Time samp
+diff :: (Num a) => Unbased a -> Unbased a -> a
+diff (Unbased x) (Unbased y) = x - y
 
-fromMillisec :: Int -> Time
-fromMillisec ms = Time (round (fromIntegral ms * (44.100 :: Double)))
+add :: (Num a) => Unbased a -> a -> Unbased a
+add (Unbased x) y = Unbased (x + y)
 
-addTime :: Time -> Time -> Time
-addTime (Time a) (Time b) = Time (a + b)
+arbitraryPoint :: (Num a) => Unbased a
+arbitraryPoint = Unbased 0
 
-diffTimeSamples :: Time -> Time -> Int
-diffTimeSamples (Time a) (Time b) = a - b
+
+newtype TimeDiff = TimeDiff Double  -- samples at 44100  (continuified -- there are enough bits in a Double for up to 10^15)
+    deriving (Eq, Ord, Show, Num, Real, Fractional, RealFrac)
+
+fromSamples :: Int -> TimeDiff
+fromSamples = TimeDiff . fromIntegral
+
+fromMillisec :: Double -> TimeDiff
+fromMillisec = TimeDiff . (* 44.100)
+
+toSamples :: TimeDiff -> Int
+toSamples (TimeDiff s) = round s
+
+
+type Time = Unbased TimeDiff
 
 
 type MIDIControl m i o = Control m (Either MIDI.MidiMessage i) (Either MIDI.MidiMessage o)
@@ -110,7 +125,7 @@ countEvents = Control $ \out -> do
         writeRef countref $! count+1
         out (count,i)
 
-longPress :: (MonadRefs m, MonadSched m) => Time -> Control m Bool LongPress
+longPress :: (MonadRefs m, MonadSched m) => TimeDiff -> Control m Bool LongPress
 longPress delay = go . countEvents
     where
     go = Control $ \out -> do

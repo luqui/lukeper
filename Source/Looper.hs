@@ -209,7 +209,7 @@ startLooper = do
         lift $ do
             quant <- lift $ gets csQuantization
             break <- lift $ gets csBreak
-            let delay | Just (bar, _) <- quant, not break = fromMillisec ((1000*bar) `div` (16*44100)) -- wait 1 sixteenth to break for a final hit
+            let delay | Just (bar, _) <- quant, not break = fromMillisec ((1000*fromIntegral bar) / (16*44100)) -- wait 1 sixteenth to break for a final hit
                       | otherwise                         = fromMillisec 0
             after delay . activateTransition . query $ \state ->
                 if not (csBreak state) then
@@ -404,7 +404,7 @@ hsLooperMain looperstate window _inchannels outchannels channels = do
     ((Mix time inputmix channelmixes, seqstate'), superstate') 
         <- runStateT (S.runSequencerT (S.tick window >> lsFrame looperstate window) seqstate) superstate
     writeIORef (lsSeqState looperstate) (seqstate', superstate')
-    let position = diffTimeSamples time (lsStartTime looperstate) 
+    let position = toSamples (time `diff` lsStartTime looperstate)
 
     inbuf <- peekElemOff channels 0
     (inbufarray, outbufarray) <- getBuffers looperstate window
