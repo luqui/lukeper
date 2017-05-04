@@ -1,4 +1,4 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving, TypeFamilies #-}
+{-# LANGUAGE FlexibleContexts, GeneralizedNewtypeDeriving, TypeFamilies #-}
 
 module Control where
 
@@ -66,7 +66,7 @@ class (Monad m) => MonadSched m where
 after :: (MonadSched m) => TimeDiff -> m () -> m ()
 after dt action = do
     t <- now
-    at (add t dt) action
+    at (t ^+^ dt) action
 
 instance MonadRefs IO where
     type Ref IO = IORef.IORef
@@ -81,23 +81,48 @@ instance (MonadRefs m) => MonadRefs (StateT.StateT s m) where
     writeRef r = lift . writeRef r
 
 
+class AffineSpace v where
+    type Diff v :: *
+    (^+^) :: v -> Diff v -> v
+    (^-^) :: v -> v -> Diff v
+
+class (AffineSpace v, Diff v ~ v, Num (Scalar v)) => VectorSpace v where
+    type Scalar v :: *
+    zeroV :: v
+    (*^) :: Scalar v -> v -> v
+
+(^/) :: (Fractional (Scalar v), VectorSpace v) => v -> Scalar v -> v
+v ^/ s = recip s *^ v
+
+ratio :: TimeDiff -> TimeDiff -> Double
+ratio (TimeDiff a) (TimeDiff b) = a / b
+
 -- Unbased makes sure that none of our calculations depend on an absolute notion of "a"
 -- (assuming "arbitraryPoint" is used appropriately -- essentially it may only be used once)
 newtype Unbased a = Unbased a
     deriving (Eq, Ord, Show)
 
-diff :: (Num a) => Unbased a -> Unbased a -> a
-diff (Unbased x) (Unbased y) = x - y
+instance (VectorSpace v) => AffineSpace (Unbased v) where
+    type Diff (Unbased v) = v
+    Unbased v ^+^ w = Unbased (v ^+^ w)
+    Unbased v ^-^ Unbased w = v ^-^ w
 
-add :: (Num a) => Unbased a -> a -> Unbased a
-add (Unbased x) y = Unbased (x + y)
-
-arbitraryPoint :: (Num a) => Unbased a
-arbitraryPoint = Unbased 0
+arbitraryPoint :: (VectorSpace a) => Unbased a
+arbitraryPoint = Unbased zeroV
 
 
 newtype TimeDiff = TimeDiff Double  -- samples at 44100  (continuified -- there are enough bits in a Double for up to 10^15)
-    deriving (Eq, Ord, Show, Num, Real, Fractional, RealFrac)
+    deriving (Eq, Ord, Show)
+
+instance AffineSpace TimeDiff where
+    type Diff TimeDiff = TimeDiff
+    TimeDiff a ^+^ TimeDiff b = TimeDiff (a + b)
+    TimeDiff a ^-^ TimeDiff b = TimeDiff (a - b)
+
+instance VectorSpace TimeDiff where
+    type Scalar TimeDiff = Double
+    zeroV = TimeDiff 0
+    s *^ TimeDiff a = TimeDiff (s * a)
 
 fromSamples :: Int -> TimeDiff
 fromSamples = TimeDiff . fromIntegral
@@ -107,7 +132,6 @@ fromMillisec = TimeDiff . (* 44.100)
 
 toSamples :: TimeDiff -> Int
 toSamples (TimeDiff s) = round s
-
 
 type Time = Unbased TimeDiff
 

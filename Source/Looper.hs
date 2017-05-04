@@ -68,8 +68,8 @@ data Mix = Mix Time InputChannel [MixChannel]
 
 data ControlState = ControlState
     { csChannels :: Array.Array Int Channel
-    , csPosition :: Int
-    , csQuantization :: Maybe (Int, Int)   -- period, phase  (i.e. (period*n + phase) is a barline)
+    , csPosition :: Time
+    , csQuantization :: Maybe (TimeDiff, Time)   -- period, phase  (i.e. (period*n + phase) is a barline)
     , csLoops :: Array.Array APC.Coord Loop.Loop
     , csQueue :: [(Maybe APC.Coord, Transition ControlState ())]  -- reversed
     , csLevel :: Double
@@ -77,10 +77,10 @@ data ControlState = ControlState
     , csSends :: Sends
     }
 
-data ActiveSlotState = Recording | Playing Int -- int is phase
+data ActiveSlotState = Recording | Playing Time -- phase
     deriving (Eq, Show)
 
-stretchActiveSlot :: Double -> Int -> ActiveSlotState -> ActiveSlotState
+stretchActiveSlot :: Double -> Time -> ActiveSlotState -> ActiveSlotState
 stretchActiveSlot stretch pos (Playing phase) = Playing (stretchPhase stretch pos phase)
 stretchActiveSlot _ _ a = a
 
@@ -93,9 +93,9 @@ stretchActiveSlot _ _ a = a
 -- phase'/s = pos/s - pos + phase
 -- phase' = s(pos/s - pos + phase)
 --        = pos - pos*s + phase*s
---        = pos*(1-s) + phase*s
-stretchPhase :: Double -> Int -> Int -> Int
-stretchPhase stretch pos phase = round (fromIntegral pos * (1 - stretch) + fromIntegral phase * stretch)
+--        = pos + s*(phase - pos)
+stretchPhase :: Double -> Time -> Time -> Time
+stretchPhase stretch pos phase = pos ^+^ (stretch *^ (phase ^-^ pos))
 
 data Channel = Channel
     { chSlots :: Array.Array Int Bool
@@ -156,7 +156,7 @@ transAllChannels t = Transition $ do
     channels <- gets csChannels
     forM_ (Array.indices channels) $ \i -> runTransition (transChannel i t)
 
-restartChannel :: Int -> Transition Channel ()
+restartChannel :: Time -> Transition Channel ()
 restartChannel phase = transModify $ \ch -> 
     ch { chActiveSlot = fmap (\(n, slotstate) ->
             (n, case slotstate of
@@ -169,6 +169,7 @@ matches = not . null
 startLooper :: LooperM ()
 startLooper = do
     -- setup state
+    time0 <- S.getCurrentTime
     lift $ do
         loops <- Array.array (APC.Coord (1,1), APC.Coord (8,5)) <$> 
                  sequence [ (APC.Coord (i,j),) <$> liftIO Loop.newLoop | i <- [1..8], j <- [1..5] ]
@@ -179,7 +180,7 @@ startLooper = do
                         , chLevel = 1
                         , chMute = False
                         }
-            , csPosition = 0
+            , csPosition = time0
             , csQuantization = Nothing
             , csLoops = loops
             , csQueue = []
@@ -221,7 +222,7 @@ startLooper = do
                 transModify (\s -> s
                    { csLoops = fmap (Loop.stretch stretch) (csLoops s)
                    , csQuantization = fmap (\(period, phase) -> 
-                        (round (fromIntegral period * stretch), stretchPhase stretch pos phase)) (csQuantization s)
+                        (stretch *^ period, stretchPhase stretch pos phase)) (csQuantization s)
                    , csChannels = fmap (\ch -> ch { 
                         chActiveSlot = (fmap.second) (stretchActiveSlot stretch pos) (chActiveSlot ch) }) (csChannels s)
                    })
@@ -236,8 +237,8 @@ startLooper = do
         lift $ do
             quant <- lift $ gets csQuantization
             break <- lift $ gets csBreak
-            let delay | Just (bar, _) <- quant, not break = fromMillisec ((1000*fromIntegral bar) / (16*44100)) -- wait 1 sixteenth to break for a final hit
-                      | otherwise                         = fromMillisec 0
+            let delay | Just (bar, _) <- quant, not break = bar ^/ 16
+                      | otherwise                         = zeroV
             after delay . activateTransition $ do
                 state <- transGet
                 if not (csBreak state) then
@@ -257,7 +258,7 @@ startLooper = do
         -- because of the way Sequencer.processEvents works. It will not correctly
         -- clear conditional events.  So we use S.after 0 to convert into a timed
         -- event, which works correctly.
-        lift . after (fromMillisec 0) $ do
+        lift . after zeroV $ do
             S.rebootSequencerT APC.apc40Raw
             startLooper
 
@@ -270,7 +271,7 @@ clearQueue :: APC.Coord -> LooperM ()
 clearQueue coord = do
     lift $ modify (\s -> s { csQueue = filter ((Just coord /=) . fst) (csQueue s) })
 
-tapChannel :: Int -> Int -> Int -> Transition Channel ()
+tapChannel :: Int -> Int -> Time -> Transition Channel ()
 tapChannel i j pos = do
     ch <- transGet
     if | Just (j', Recording) <- chActiveSlot ch,
@@ -297,18 +298,18 @@ maybeSetQuantization i j = do
     state <- lift get
     M.when (isNothing (csQuantization state)) $ do
         let loop = csLoops state Array.! APC.Coord (i,j)
-        loopsize <- liftIO $ Loop.getLoopSize loop
+        loopsize <- liftIO $ fromSamples <$> Loop.getLoopSize loop
         setQuantization loopsize
 
-setQuantization :: Int -> LooperM ()
+setQuantization :: TimeDiff -> LooperM ()
 setQuantization cycleLength =
     lift $ modify (\s -> s { csQuantization = Just (qlength, csPosition s) })
     where
     -- If we have long loops, half/double until the tempo is reasonable.
     -- This should work for most types of music.
-    qlength = until (>= minlength) (* 2) . until (<= maxlength) (`div` 2) $ cycleLength
-    maxlength = 44100*4  -- 4 seconds  (60bpm)
-    minlength = 44100    -- 1 second  (240bpm)
+    qlength = until (>= minlength) (2 *^) . until (<= maxlength) (0.5 *^) $ cycleLength
+    maxlength = fromSamples (44100*4)  -- 4 seconds  (60bpm)
+    minlength = fromSamples 44100      -- 1 second  (240bpm)
 
 stopActive :: Int -> Transition Channel ()
 stopActive i = do
@@ -357,10 +358,10 @@ runLooper winsize = do
         (False, Nothing) -> return True
         (False, Just (period, phase)) -> do
             let bar = quantPoint period phase pos
-            let beat = quantPoint (period `div` 4) phase pos -- TODO more flexible than 4 beats/bar
+            let beat = quantPoint (period ^/ 4) phase pos -- TODO more flexible than 4 beats/bar
             -- XXX "24 times per quarter note" but subdiv doesn't match, seems to be 12 times 
             -- per quarter according to the APC.
-            let clock = quantPoint (period `div` (2*24)) phase pos
+            let clock = quantPoint (period ^/ (2*24)) phase pos
             M.when clock $ S.send APC.InClock
              
             if bar then
@@ -377,10 +378,15 @@ runLooper winsize = do
 
     -- It is important that renderMix reads the *new* state after running the queue.
     mix <- renderMix
+    lift $ modify (\s -> s { csPosition = csPosition s ^+^ fromSamples winsize })
     return mix
 
     where
-    quantPoint period phase pos = ((pos-phase) `div` period) /= ((pos-phase) - winsize) `div` period
+    quantPoint :: TimeDiff -> Time -> Time -> Bool
+    quantPoint period phase pos = thisBar /= lastBar
+        where
+        thisBar = floor (ratio (pos ^-^ phase) period) :: Int 
+        lastBar = floor (ratio ((pos ^-^ phase) ^-^ fromSamples winsize) period)
 
 type IOBuffers = (IOArray.IOUArray Int Double, IOArray.IOUArray Int Double)
 
@@ -438,7 +444,6 @@ hsLooperMain looperstate window _inchannels outchannels channels = do
     ((Mix time inputmix channelmixes, seqstate'), superstate') 
         <- runStateT (S.runSequencerT (S.tick window >> lsFrame looperstate window) seqstate) superstate
     writeIORef (lsSeqState looperstate) (seqstate', superstate')
-    let position = toSamples (time `diff` lsStartTime looperstate)
 
     inbuf <- peekElemOff channels 0
     (inbufarray, outbufarray) <- getBuffers looperstate window
@@ -447,8 +452,8 @@ hsLooperMain looperstate window _inchannels outchannels channels = do
 
     forM_ channelmixes $ \MixChannel{..} -> 
         case mcState of
-            Recording -> Loop.append mcLoop position inbufarray
-            Playing phase -> Loop.play mcLoop (position - phase) mcLevel outbufarray
+            Recording -> Loop.append mcLoop (error "position is ignored, huh") inbufarray
+            Playing phase -> Loop.play mcLoop (toSamples (time ^-^ phase)) mcLevel outbufarray
 
     mainoutbuf <- peekElemOff channels 0
     sendbufs <- mapM (peekElemOff channels) [1..min (outchannels-1) 8]
