@@ -14,13 +14,12 @@ import qualified System.IO as IO
 
 
 import Control.Arrow (second)
-import Control.Monad (forM, forM_)
-import Control.Monad.IO.Class (liftIO)
+import Control.Monad (forM, forM_, guard)
 import Control.Monad.Primitive (RealWorld)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.State (StateT(..), get, gets, put, modify, runStateT)
 import Data.Maybe (catMaybes, isNothing)
-import Data.Monoid (Monoid(..))
+import Data.Monoid (Monoid(..), (<>))
 
 import Data.IORef
 import Data.Word
@@ -31,7 +30,7 @@ import qualified APC40mkII_Raw as APC
 import qualified Control.Monad.Trans.RWS as RWS
 import qualified Data.Array as Array
 import qualified Foreign.C.String as C
-import qualified Loop as Loop
+import qualified PureLoop as Loop
 import qualified Sequencer as S
 import Control
 
@@ -56,19 +55,10 @@ type LooperM = S.SequencerT ControlIn ControlOut (StateT ControlState IO)
 
 type Sends = Array.Array Int Float
 
-data MixChannel = MixChannel
-    { mcLoop :: Loop.Loop
-    , mcLevel :: Double
-    , mcState :: ActiveSlotState
-    , mcSends :: Sends
-    }
-
 data InputChannel = InputChannel
     { icLevel :: Double
     , icSends :: Sends
     }
-
-data Mix = Mix Time InputChannel [MixChannel]
 
 
 data ControlState = ControlState
@@ -182,8 +172,8 @@ startLooper :: LooperM ()
 startLooper = do
     -- setup state
     lift $ do
-        loops <- Array.array (APC.Coord (1,1), APC.Coord (8,5)) <$> 
-                 sequence [ (APC.Coord (i,j),) <$> liftIO Loop.newLoop | i <- [1..8], j <- [1..5] ]
+        let loops = Array.array (APC.Coord (1,1), APC.Coord (8,5)) $
+                      [ (APC.Coord (i,j), mempty) | i <- [1..8], j <- [1..5] ]
         put $ ControlState
             { csChannels = Array.listArray (1,8) . replicate 8 $
                 Channel { chSlots = Array.listArray (1,5) . replicate 5 $ False
@@ -229,7 +219,7 @@ startLooper = do
                 time <- transTime
                 let stretch = 1.01^^(-dt)
                 transModify (\s -> s
-                   { csLoops = fmap (Loop.stretch stretch) (csLoops s)
+                   { csLoops = csLoops s -- fmap (Loop.stretch stretch) (csLoops s)  -- TODO re-enable stretch
                    , csQuantization = fmap (\(period, phase) -> 
                         (stretch *^ period, stretchPhase stretch time phase)) (csQuantization s)
                    , csChannels = fmap (\ch -> ch { 
@@ -274,8 +264,7 @@ startLooper = do
 
 freshLoop :: Int -> Int -> LooperM ()
 freshLoop i j = do
-    fresh <- liftIO Loop.newLoop
-    lift $ modify (\s -> s { csLoops = csLoops s Array.// [(APC.Coord (i,j), fresh)] })
+    lift $ modify (\s -> s { csLoops = csLoops s Array.// [(APC.Coord (i,j), mempty)] })
 
 clearQueue :: APC.Coord -> LooperM ()
 clearQueue coord = do
@@ -308,7 +297,7 @@ maybeSetQuantization i j = do
     state <- lift get
     M.when (isNothing (csQuantization state)) $ do
         let loop = csLoops state Array.! APC.Coord (i,j)
-        loopsize <- liftIO $ fromSamples <$> Loop.getLoopSize loop
+        let loopsize = fromSamples (Loop.length loop)
         setQuantization loopsize
 
 setQuantization :: TimeDiff -> LooperM ()
@@ -343,25 +332,34 @@ activateTransition t = do
     actions
     return x
 
-renderMix :: LooperM Mix
-renderMix = do
-    state <- lift get
-    let inputChannel = InputChannel { icLevel = csLevel state, icSends = csSends state }
-    let loopChannels = catMaybes . flip map (Array.assocs (csChannels state)) $ \(i,ch) ->
-            if | Just (j, chstate) <- chActiveSlot ch
-                 , not (chMute ch) -> 
-                    Just (MixChannel
-                        { mcLoop = csLoops state Array.! APC.Coord (i,j)
-                        , mcLevel = csLevel state * chLevel ch
-                        , mcState = chstate
-                        , mcSends = csSends state
-                        })
-               | otherwise -> Nothing
-    time <- S.getCurrentTime
-    return $ Mix time inputChannel (if csBreak state then [] else loopChannels)
+sumV :: Int -> [Vector.Vector Double] -> Vector.Vector Double
+sumV l [] = Vector.replicate l 0
+sumV _ (v:vs) = foldr (Vector.zipWith (+)) v vs
 
-runLooper :: Int -> LooperM Mix
-runLooper winsize = do
+renderMix :: Vector.Vector Double -> LooperM (Vector.Vector Double)
+renderMix inbuf = do
+    state <- lift get
+    time <- S.getCurrentTime
+    let (updates, outs) = mconcat $ do
+            (i,ch) <- Array.assocs (csChannels state)
+            guard $ not (chMute ch)
+            return $ if | Just (j, Recording) <- chActiveSlot ch ->
+                            let coord = APC.Coord (i,j) in
+                            ([(coord, (csLoops state Array.! coord) <> Loop.fromVector inbuf)], [])
+                        | Just (j, Playing phase) <- chActiveSlot ch ->
+                            let coord = APC.Coord (i,j) in
+                            ([], [Loop.indexRange (toSamples (time ^-^ phase)) 
+                                                  (Vector.length inbuf)
+                                                  (csLoops state Array.! coord)
+                                                  (csLevel state * chLevel ch)])
+                        | otherwise ->
+                            ([], [])
+    lift $ put (state { csLoops = csLoops state Array.// updates }) 
+    return $ sumV (Vector.length inbuf) outs
+
+runLooper :: Vector.Vector Double -> LooperM (Vector.Vector Double)
+runLooper inbuf = do
+    let winsize = Vector.length inbuf
     state <- lift get
     time <- S.getCurrentTime
 
@@ -369,11 +367,11 @@ runLooper winsize = do
         (True, _) -> return False
         (False, Nothing) -> return True
         (False, Just (period, phase)) -> do
-            let bar = quantPoint period phase time
-            let beat = quantPoint (period ^/ 4) phase time -- TODO more flexible than 4 beats/bar
+            let bar = quantPoint winsize period phase time
+            let beat = quantPoint winsize (period ^/ 4) phase time -- TODO more flexible than 4 beats/bar
             -- XXX "24 times per quarter note" but subdiv doesn't match, seems to be 12 times 
             -- per quarter according to the APC.
-            let clock = quantPoint (period ^/ (2*24)) phase time
+            let clock = quantPoint winsize (period ^/ (2*24)) phase time
             M.when clock $ S.send APC.InClock
              
             if bar then
@@ -389,21 +387,21 @@ runLooper winsize = do
         forM_ (reverse queue) (activateTransition . snd)
 
     -- It is important that renderMix reads the *new* state after running the queue.
-    renderMix
+    renderMix inbuf
 
     where
-    quantPoint :: TimeDiff -> Time -> Time -> Bool
-    quantPoint period phase time = thisBar /= lastBar
+    quantPoint :: Int -> TimeDiff -> Time -> Time -> Bool
+    quantPoint winsize period phase time = thisBar /= lastBar
         where
         thisBar = floor (ratio (time ^-^ phase) period) :: Int 
         lastBar = floor (ratio ((time ^-^ phase) ^-^ fromSamples winsize) period)
 
-type IOBuffers = (MVector Double, MVector Double)
+type IOBuffers = MVector Double
 
 data LooperState = LooperState 
     { lsMidiDevs    :: Devs
     , lsStartTime   :: Time
-    , lsFrame       :: Int -> LooperM Mix
+    , lsFrame       :: Vector.Vector Double -> LooperM (Vector.Vector Double)
     , lsSeqState    :: IORef (S.SeqState LooperM ControlIn ControlOut, ControlState)
     , lsBuffers     :: IORef (Int, IOBuffers)
     }
@@ -434,7 +432,7 @@ hs_looper_main state window input output channels = wrapErrors "hs_looper_main" 
     hsLooperMain looperstate (fromIntegral window) (fromIntegral input) (fromIntegral output) channels
 
 makeBuffers :: Int -> IO IOBuffers
-makeBuffers window = (,) <$> buf <*> buf
+makeBuffers window = buf
     where
     buf = MVector.new window
 
@@ -449,32 +447,27 @@ getBuffers state window = do
             return newbuffers
 
 hsLooperMain :: LooperState -> Int -> Int -> Int -> Foreign.Ptr (Foreign.Ptr Float) -> IO ()
-hsLooperMain looperstate window _inchannels outchannels channels = do
-    (seqstate, superstate) <- readIORef (lsSeqState looperstate)
-    ((Mix time inputmix channelmixes, seqstate'), superstate') 
-        <- runStateT (S.runSequencerT (S.tick window >> lsFrame looperstate window) seqstate) superstate
-    writeIORef (lsSeqState looperstate) (seqstate', superstate')
-
+hsLooperMain looperstate window _inchannels _outchannels channels = do
     inbuf <- peekElemOff channels 0
-    (inbufarray, outbufarray) <- getBuffers looperstate window
+    inbufarray <- getBuffers looperstate window
     forM_ [0..window-1] $ \i -> MVector.unsafeWrite inbufarray i =<< realToFrac <$> peekElemOff inbuf i
-    forM_ [0..window-1] $ \i -> MVector.unsafeWrite outbufarray i 0
 
     inbufvector <- Vector.freeze inbufarray
-
-    forM_ channelmixes $ \MixChannel{..} -> 
-        case mcState of
-            Recording -> Loop.append mcLoop (error "position is ignored, huh") inbufvector
-            Playing phase -> Loop.play mcLoop (toSamples (time ^-^ phase)) mcLevel outbufarray
+    
+    (seqstate, superstate) <- readIORef (lsSeqState looperstate)
+    ((outvector, seqstate'), superstate') 
+        <- runStateT (S.runSequencerT (S.tick window >> lsFrame looperstate inbufvector) seqstate) superstate
+    writeIORef (lsSeqState looperstate) (seqstate', superstate')
 
     mainoutbuf <- peekElemOff channels 0
-    sendbufs <- mapM (peekElemOff channels) [1..min (outchannels-1) 8]
+    -- TODO re-enable send buffers
+    --sendbufs <- mapM (peekElemOff channels) [1..min (outchannels-1) 8]
     
     forM_ [0..window-1] $ \i -> do
-        sample <- realToFrac <$> MVector.unsafeRead outbufarray i
+        let sample = realToFrac (outvector Vector.! i)
         pokeElemOff mainoutbuf i sample
-        forM_ (zip [1..8] sendbufs) $ \(sendix, sendbuf) -> 
-            pokeElemOff sendbuf i ((icSends inputmix Array.! sendix) * sample)
+        --forM_ (zip [1..8] sendbufs) $ \(sendix, sendbuf) -> 
+        --    pokeElemOff sendbuf i ((icSends inputmix Array.! sendix) * sample)
 
 hs_looper_uilog :: StablePtr LooperState -> IO C.CString
 hs_looper_uilog state = wrapErrors "hs_looper_uilog" $ do
@@ -486,7 +479,7 @@ hsLooperUILog lstate = do
     state <- snd <$> readIORef (lsSeqState lstate)
     maybelines <- forM (Array.assocs (csChannels state)) $ \(i,ch) ->
         if | Just (j, chstate) <- chActiveSlot ch -> do
-                loopsize <- show <$> Loop.getLoopSize (csLoops state Array.! APC.Coord (i,j))
+                let loopsize = show (Loop.length (csLoops state Array.! APC.Coord (i,j)))
                 return . Just $ loopsize ++ " " ++ show chstate
            | otherwise -> return Nothing
     return . unlines $
