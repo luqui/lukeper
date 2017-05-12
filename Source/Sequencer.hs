@@ -122,8 +122,9 @@ nextEvent tmax = SequencerT $ do
             getSequencerT action
             return True
         _ -> do
+            time <- getSequencerT getCurrentTime
             modify $ \s -> s { seqCurrentTime = tmax }
-            return False
+            return (time < tmax)
 
 getCurrentTime :: (Monad m) => SequencerT i o m Time
 getCurrentTime = SequencerT $ gets seqCurrentTime

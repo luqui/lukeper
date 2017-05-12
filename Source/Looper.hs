@@ -1,4 +1,4 @@
-{-# LANGUAGE FlexibleContexts, FlexibleInstances, GeneralizedNewtypeDeriving, MultiWayIf, NondecreasingIndentation, RecordWildCards, ScopedTypeVariables, TupleSections #-}
+{-# LANGUAGE FlexibleContexts, FlexibleInstances, GeneralizedNewtypeDeriving, LambdaCase, MultiWayIf, NondecreasingIndentation, RecordWildCards, ScopedTypeVariables, TupleSections #-}
 
 module Looper where
 
@@ -357,8 +357,30 @@ renderMix inbuf = do
     lift $ put (state { csLoops = csLoops state Array.// updates }) 
     return $ sumV (Vector.length inbuf) outs
 
+iterWhileM :: (Monad m) => m (Maybe a) -> m [a]
+iterWhileM m = m >>= \case
+    Just x -> (x:) <$> iterWhileM m
+    Nothing -> return []
+
 runLooper :: Vector.Vector Double -> LooperM (Vector.Vector Double)
 runLooper inbuf = do
+    startTime <- S.getCurrentTime
+    let targetTime = startTime ^+^ fromSamples (Vector.length inbuf)
+
+    S.processMidiEvents
+    outbufs <- iterWhileM $ do
+        time0 <- S.getCurrentTime
+        more <- S.nextEvent targetTime
+        if more then do
+            time1 <- S.getCurrentTime
+            outbuf <- runLooper1 (Vector.slice (toSamples (time0 ^-^ startTime)) (toSamples (time1 ^-^ time0)) inbuf)
+            return $ Just outbuf
+        else do
+            return Nothing
+    return $ mconcat outbufs
+    
+runLooper1 :: Vector.Vector Double -> LooperM (Vector.Vector Double)
+runLooper1 inbuf = do
     let winsize = Vector.length inbuf
     state <- lift get
     time <- S.getCurrentTime
@@ -456,7 +478,7 @@ hsLooperMain looperstate window _inchannels _outchannels channels = do
     
     (seqstate, superstate) <- readIORef (lsSeqState looperstate)
     ((outvector, seqstate'), superstate') 
-        <- runStateT (S.runSequencerT (S.tick window >> lsFrame looperstate inbufvector) seqstate) superstate
+        <- runStateT (S.runSequencerT (lsFrame looperstate inbufvector) seqstate) superstate
     writeIORef (lsSeqState looperstate) (seqstate', superstate')
 
     mainoutbuf <- peekElemOff channels 0
