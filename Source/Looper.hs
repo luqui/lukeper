@@ -2,7 +2,8 @@
 
 module Looper where
 
-import Prelude hiding (break, (>>))
+import Prelude hiding (break, (>>), id, (.))
+import Control.Category
 
 import qualified Control.Exception as Exc
 import qualified Control.Monad as M
@@ -48,8 +49,17 @@ foreign export ccall hs_looper_exit :: StablePtr LooperState -> IO ()
 
 type MVector = MVector.MVector RealWorld
 
-type ControlIn = APC.APCOutMessage
-type ControlOut = APC.APCInMessage
+newtype ControlIn = ControlIn { getControlIn :: APC.APCOutMessage }
+    deriving (Eq)
+newtype ControlOut = ControlOut { getControlOut :: APC.APCInMessage }
+    deriving (Eq)
+
+fromAPC :: APC.APCInMessage -> ControlOut
+fromAPC = ControlOut
+
+toAPC :: (Monad m) => ControlIn -> m APC.APCOutMessage
+toAPC (ControlIn m) = return m
+
 type LooperM = S.SequencerT ControlIn ControlOut (StateT ControlState IO)
 
 
@@ -190,19 +200,19 @@ startLooper = do
             } 
 
     S.whenever $ \e -> do
-        APC.OutMatrixButton (APC.Coord (i,j)) PressDown <- return e
+        APC.OutMatrixButton (APC.Coord (i,j)) PressDown <- toAPC e
         lift . schedule . (Just (APC.Coord (i,j)),) $
             transChannel i . tapChannel i j =<< transTime
     S.whenever $ \e -> do
-        APC.OutMatrixButton (APC.Coord (i,j)) PressLong <- return e
+        APC.OutMatrixButton (APC.Coord (i,j)) PressLong <- toAPC e
         lift . activateTransition $ transChannel i . (stopActive i >>) $ do
             transModify (\ch -> ch { chSlots = chSlots ch Array.// [(j, False)] })
-            transLights $ S.send (APC.InMatrixButton (APC.Coord (i,j)) offColor)
+            transLights . S.send . fromAPC $ APC.InMatrixButton (APC.Coord (i,j)) offColor
             transActions $ do
                 do freshLoop i j
                    clearQueue (APC.Coord (i,j))
     S.whenever $ \e -> do
-        APC.OutFader i level <- return e
+        APC.OutFader i level <- toAPC e
         lift $
             if | 1 <= i && i <= 8 -> 
                 activateTransition . transChannel i $ 
@@ -213,7 +223,7 @@ startLooper = do
                | otherwise ->
                     return ()
     S.whenever $ \e -> do
-        APC.OutTempoChange dt <- return e
+        APC.OutTempoChange dt <- toAPC e
         lift $ do
             activateTransition $ do
                 time <- transTime
@@ -226,13 +236,13 @@ startLooper = do
                         chActiveSlot = (fmap.second) (stretchActiveSlot stretch time) (chActiveSlot ch) }) (csChannels s)
                    })
     S.whenever $ \e -> do
-        APC.OutUnmuteButton ch True <- return e
+        APC.OutUnmuteButton ch True <- toAPC e
         lift . activateTransition . transChannel ch $ do
             s <- transGet
             transPut (s { chMute = not (chMute s) })
-            transLights $ S.send (APC.InUnmuteButton ch (chMute s))
+            transLights . S.send . fromAPC $ APC.InUnmuteButton ch (chMute s)
     S.whenever $ \e -> do
-        APC.OutStopAllButton True <- return e
+        APC.OutStopAllButton True <- toAPC e
         lift $ do
             quant <- lift $ gets csQuantization
             break <- lift $ gets csBreak
@@ -248,18 +258,18 @@ startLooper = do
                     transModify (\s -> s { csBreak = False
                                          , csQuantization = fmap (\(l,_) -> (l, time)) (csQuantization s) })
     S.whenever $ \e -> do
-        APC.OutDial dial val <- return e
+        APC.OutDial dial val <- toAPC e
         lift $ do
-            S.send (APC.InDial dial val)
+            S.send . fromAPC $ APC.InDial dial val
             lift $ modify (\s -> s { csSends = csSends s Array.// [(dial, fromIntegral val / 127)] })
     S.when $ \e -> do 
-        APC.OutSessionButton True <- return e
+        APC.OutSessionButton True <- toAPC e
         -- XXX hack -- we can't reboot in the middle of a conditional event handler,
         -- because of the way Sequencer.processEvents works. It will not correctly
         -- clear conditional events.  So we use S.after 0 to convert into a timed
         -- event, which works correctly.
         lift . after zeroV $ do
-            S.rebootSequencerT APC.apc40Raw
+            S.rebootSequencerT apc40Raw
             startLooper
 
 freshLoop :: Int -> Int -> LooperM ()
@@ -276,7 +286,7 @@ tapChannel i j pos = do
     if | Just (j', Recording) <- chActiveSlot ch,
          j' == j -> do 
             transPut (ch { chActiveSlot = Just (j, Playing pos) })
-            transLights $ S.send (APC.InMatrixButton (APC.Coord (i,j)) playingColor)
+            transLights . S.send . fromAPC $ APC.InMatrixButton (APC.Coord (i,j)) playingColor
             transActions $ maybeSetQuantization i j
        | Just (j', Playing _) <- chActiveSlot ch,
          j' == j -> do
@@ -284,12 +294,12 @@ tapChannel i j pos = do
        | chSlots ch Array.! j -> do
             stopActive i
             transPut (ch { chActiveSlot = Just (j, Playing pos) })
-            transLights $ S.send (APC.InMatrixButton (APC.Coord (i,j)) playingColor)
+            transLights $ S.send . fromAPC $ APC.InMatrixButton (APC.Coord (i,j)) playingColor
        -- not (chSlots ch Array.! j)
        | otherwise -> do
             stopActive i
             transPut (ch { chSlots = chSlots ch Array.// [(j, True)], chActiveSlot = Just (j, Recording) })
-            transLights $ S.send (APC.InMatrixButton (APC.Coord (i,j)) recordingColor)
+            transLights $ S.send . fromAPC $ APC.InMatrixButton (APC.Coord (i,j)) recordingColor
             transActions $ freshLoop i j
 
 maybeSetQuantization :: Int -> Int -> LooperM ()
@@ -316,7 +326,7 @@ stopActive i = do
     ch <- transGet
     if | Just (j, _) <- chActiveSlot ch -> do
             transPut (ch { chActiveSlot = Nothing })
-            transLights $ S.send (APC.InMatrixButton (APC.Coord (i,j)) stoppedColor)
+            transLights . S.send . fromAPC $ APC.InMatrixButton (APC.Coord (i,j)) stoppedColor
        | otherwise  -> return ()
 
 schedule :: (Maybe APC.Coord, Transition ControlState ()) -> LooperM ()
@@ -394,12 +404,12 @@ runLooper1 inbuf = do
             -- XXX "24 times per quarter note" but subdiv doesn't match, seems to be 12 times 
             -- per quarter according to the APC.
             let clock = quantPoint winsize (period ^/ (2*24)) phase time
-            M.when clock $ S.send APC.InClock
+            M.when clock . S.send . fromAPC $ APC.InClock
              
             if bar then
-                S.send (APC.InMetronome True) >> after (fromMillisec 200) (S.send (APC.InMetronome False))
+                S.send (fromAPC (APC.InMetronome True)) >> after (fromMillisec 200) (S.send (fromAPC (APC.InMetronome False)))
             else if beat then
-                S.send (APC.InMetronome True) >> after (fromMillisec 100) (S.send (APC.InMetronome False))
+                S.send (fromAPC (APC.InMetronome True)) >> after (fromMillisec 100) (S.send (fromAPC (APC.InMetronome False)))
             else return ()
 
             return bar
@@ -428,6 +438,9 @@ data LooperState = LooperState
     , lsBuffers     :: IORef (Int, IOBuffers)
     }
 
+apc40Raw :: MIDIControl LooperM ControlOut ControlIn
+apc40Raw = right (arr ControlIn) . APC.apc40Raw . right (arr getControlOut)
+
 hs_looper_init :: IO (StablePtr LooperState)
 hs_looper_init = wrapErrors "hs_looper_init" $ do
     devs <- openDevs
@@ -437,7 +450,7 @@ hs_looper_init = wrapErrors "hs_looper_init" $ do
             S.getCurrentTime
     ((time0, seqstate), superstate) <- 
         runStateT 
-            (S.runSequencerT startlooper =<< S.bootSequencerT devs APC.apc40Raw) 
+            (S.runSequencerT startlooper =<< S.bootSequencerT devs apc40Raw) 
             badstate
     seqstateref <- newIORef (seqstate, superstate)
     buffers <- newIORef =<< (256,) <$> makeBuffers 256  -- a guess, will be reinitialized if incorrect
