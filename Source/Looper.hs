@@ -63,11 +63,8 @@ toAPC (ControlIn m) = return m
 type LooperM = S.SequencerT ControlIn ControlOut (StateT ControlState IO)
 
 
-type Sends = Array.Array Int Float
-
 data InputChannel = InputChannel
     { icLevel :: Double
-    , icSends :: Sends
     }
 
 
@@ -78,7 +75,6 @@ data ControlState = ControlState
     , csQueue :: [(Maybe APC.Coord, Transition ControlState ())]  -- reversed
     , csLevel :: Double
     , csBreak :: Bool
-    , csSends :: Sends
     }
 
 data ActiveSlotState = Recording | Playing Time -- phase
@@ -196,7 +192,6 @@ startLooper = do
             , csQueue = []
             , csLevel = 1
             , csBreak = False
-            , csSends = Array.listArray (1,8) (repeat 0)
             } 
 
     S.whenever $ \e -> do
@@ -257,11 +252,6 @@ startLooper = do
                     transAllChannels (restartChannel time)
                     transModify (\s -> s { csBreak = False
                                          , csQuantization = fmap (\(l,_) -> (l, time)) (csQuantization s) })
-    S.whenever $ \e -> do
-        APC.OutDial dial val <- toAPC e
-        lift $ do
-            S.send . fromAPC $ APC.InDial dial val
-            lift $ modify (\s -> s { csSends = csSends s Array.// [(dial, fromIntegral val / 127)] })
     S.when $ \e -> do 
         APC.OutSessionButton True <- toAPC e
         -- XXX hack -- we can't reboot in the middle of a conditional event handler,
@@ -495,14 +485,10 @@ hsLooperMain looperstate window _inchannels _outchannels channels = do
     writeIORef (lsSeqState looperstate) (seqstate', superstate')
 
     mainoutbuf <- peekElemOff channels 0
-    -- TODO re-enable send buffers
-    --sendbufs <- mapM (peekElemOff channels) [1..min (outchannels-1) 8]
     
     forM_ [0..window-1] $ \i -> do
         let sample = realToFrac (outvector Vector.! i)
         pokeElemOff mainoutbuf i sample
-        --forM_ (zip [1..8] sendbufs) $ \(sendix, sendbuf) -> 
-        --    pokeElemOff sendbuf i ((icSends inputmix Array.! sendix) * sample)
 
 hs_looper_uilog :: StablePtr LooperState -> IO C.CString
 hs_looper_uilog state = wrapErrors "hs_looper_uilog" $ do
