@@ -252,6 +252,9 @@ startLooper = do
                     transAllChannels (restartChannel time)
                     transModify (\s -> s { csBreak = False
                                          , csQuantization = fmap (\(l,_) -> (l, time)) (csQuantization s) })
+    S.whenever $ \e -> do
+        APC.OutMetronome PressLong <- toAPC e
+        lift . lift $ modify (\s -> s { csQuantization = Nothing })
     S.when $ \e -> do 
         APC.OutSessionButton True <- toAPC e
         -- XXX hack -- we can't reboot in the middle of a conditional event handler,
@@ -377,6 +380,10 @@ runLooper inbuf = do
             return $ Just outbuf
         else do
             return Nothing
+    let retbuf = mconcat outbufs
+    M.when (Vector.length retbuf /= Vector.length inbuf) $ 
+        error ("Return buffer size " ++ show (Vector.length retbuf) 
+            ++ " is not the same as input buffer size " ++ show (Vector.length inbuf))
     return $ mconcat outbufs
     
 runLooper1 :: Vector.Vector Double -> LooperM (Vector.Vector Double)
@@ -396,10 +403,12 @@ runLooper1 inbuf = do
             let clock = quantPoint winsize (period ^/ (2*24)) phase time
             M.when clock . S.send . fromAPC $ APC.InClock
              
-            if bar then
-                S.send (fromAPC (APC.InMetronome True)) >> after (fromMillisec 200) (S.send (fromAPC (APC.InMetronome False)))
-            else if beat then
-                S.send (fromAPC (APC.InMetronome True)) >> after (fromMillisec 100) (S.send (fromAPC (APC.InMetronome False)))
+            if bar then do
+                S.send (fromAPC (APC.InMetronome True))
+                after (fromMillisec 200) $ S.send (fromAPC (APC.InMetronome False))
+            else if beat then do
+                S.send (fromAPC (APC.InMetronome True))
+                after (fromMillisec 100) $ S.send (fromAPC (APC.InMetronome False))
             else return ()
 
             return bar

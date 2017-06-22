@@ -219,7 +219,7 @@ data APCOutMessage
     = OutMatrixButton Coord LongPress
     | OutFader Int Double
     | OutTempoChange Int
-    | OutMetronome Bool
+    | OutMetronome LongPress
     | OutSessionButton Bool
     | OutUnmuteButton Int Bool
     | OutStopAllButton Bool
@@ -248,7 +248,7 @@ apc40Raw = Control $ \out -> do
     matrixI <- instControl rgbMatrix (out . Arrow.right (uncurry OutMatrixButton))
     fadersI <- instControl faders (out . Arrow.right (uncurry OutFader))
     tempoI <- instControl (relativeControl 0x0d) (out . Arrow.right OutTempoChange)
-    metronomeI <- instControl (monoButton 0x5a False) (out . Arrow.right OutMetronome)
+    metronomeI <- instControl (right (longPress (fromMillisec 500)) . monoButton 0x5a False) (out . Arrow.right OutMetronome)
     sessionI <- instControl (monoButton 0x66 False) (out . Arrow.right OutSessionButton)
     unmuteI <- instControl (channelMonoButton 0x32 True) (out . Arrow.right (uncurry OutUnmuteButton))
     stopAllI <- instControl (inputOnlyButton 0x51) (out . Arrow.right OutStopAllButton)
