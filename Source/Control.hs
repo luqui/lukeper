@@ -1,4 +1,4 @@
-{-# LANGUAGE FlexibleContexts, GeneralizedNewtypeDeriving, LambdaCase, TupleSections, TypeFamilies #-}
+{-# LANGUAGE FlexibleContexts, GeneralizedNewtypeDeriving, LambdaCase, TupleSections, TypeFamilies, UndecidableSuperClasses #-}
 
 module Control where
 
@@ -62,6 +62,27 @@ multiOutProc f = stateProc [] $ \pending input ->
     case newouts pending of
         [] -> return ([], Nothing)
         (x:xs) -> Sig.instant (xs, Just x)
+
+data LongPress = PressDown | PressUp | PressLong
+    deriving (Eq,Show)
+
+data LongPressState t
+    = LPIdle
+    | LPWaiting t
+
+longPress :: (MonadSched m, MonadRefs m) => TimeDiff -> Control m Bool LongPress
+longPress delay = stateProc LPIdle $ \state e -> do
+    (wmin, _) <- Sig.window
+    case (e, state) of
+        (Nothing, LPIdle) -> return (LPIdle, Nothing)
+        (Nothing, LPWaiting t)
+            | wmin >= t -> return (LPIdle, Just PressLong)
+            | otherwise -> Sig.restrict t >> return (LPWaiting t, Nothing)
+        (Just False, _) -> return (LPIdle, Just PressUp)
+        (Just True, _) -> 
+            let target = wmin ^+^ delay in
+            Sig.restrict target >> return (LPWaiting target, Just PressDown)
+
 
 -- Bizarrely, composition needs Monad, but none of the Arrow combis do (except composition I guess).
 instance (Monad m) => Category (Control m) where
@@ -133,7 +154,7 @@ instance MonadRefs (ST s) where
 
 
 
-class AffineSpace v where
+class (VectorSpace (Diff v)) => AffineSpace v where
     type Diff v :: *
     (^+^) :: v -> Diff v -> v
     (^-^) :: v -> v -> Diff v
@@ -193,9 +214,6 @@ type Time = Unbased TimeDiff
 
 type MIDIControl m i o = Control m (Either MIDI.MidiMessage i) (Either MIDI.MidiMessage o)
 
-data LongPress = PressDown | PressUp | PressLong
-    deriving (Eq, Show)
-
 countEvents :: (MonadRefs m) => Control m i (Int,i)
 countEvents = Control $ \out -> do
     countref <- newRef 0
@@ -203,20 +221,6 @@ countEvents = Control $ \out -> do
         count <- readRef countref
         writeRef countref $! count+1
         out (count,i)
-
-longPress :: (MonadRefs m, MonadSched m) => TimeDiff -> Control m Bool LongPress
-longPress delay = go . countEvents
-    where
-    go = Control $ \out -> do
-        lastcountref <- newRef 0
-        return $ \(count, i) -> do
-            writeRef lastcountref count
-            if i then do after delay $ do
-                             lastcount <- readRef lastcountref
-                             if count == lastcount then out PressLong else return ()
-                         out PressDown
-                 else out PressUp
-
 
 openOutDev :: IO MIDI.Connection
 openOutDev = MIDI.openDestination . head =<< filterM (fmap ("APC40 mkII" ==) . MIDI.getName) =<< MIDI.enumerateDestinations

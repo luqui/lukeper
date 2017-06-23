@@ -35,6 +35,9 @@ instance MonadTrans (WindowT t) where
 window :: (Monad m) => WindowT t m (t,t)
 window = WindowT (\(tmin, tmax) -> return (tmax, (tmin, tmax)))
 
+restrict :: (Monad m, Ord t) => t -> WindowT t m ()
+restrict newtmax = WindowT (\(tmin, tmax) -> return (max tmin (min tmax newtmax), ()))
+
 instant :: (Monad m) => a -> WindowT t m a
 instant x = WindowT (\(tmin, _) -> return (tmin, x))
 
@@ -122,21 +125,3 @@ countEvents = Stateful 0 . arr $ \(count,e) ->
         Nothing -> (count, Event Nothing)
         Just x  -> (count+1, Event (Just (count,x)))
 
-data LongPress = PressDown | PressUp | PressLong
-
-data LongPressState t
-    = LPIdle
-    | LPWaiting t
-
-{-
-longPress :: (Ord t, Num t) => t -> SigTrans t (Event Bool) (Event LongPress)
-longPress delay = stateProc LPIdle $ \state e -> do
-    wsize <- windowSize
-    case (getEvent e, state) of
-        (Nothing, LPIdle) -> return (LPIdle, Event Nothing)
-        (Nothing, LPWaiting t)
-            | t <= 0 -> return (LPIdle, Event (Just PressLong))
-            | otherwise -> restrict t >> return (LPWaiting (t-wsize), Event Nothing)
-        (Just False, _) -> return (LPIdle, Event (Just PressUp))
-        (Just True, _) -> return (LPWaiting delay, Event (Just PressDown))
--}
