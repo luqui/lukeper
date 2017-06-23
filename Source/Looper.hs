@@ -346,6 +346,7 @@ renderMix inbuf = do
     state <- lift get
     time <- S.getCurrentTime
     let (updates, outs) = mconcat $ do
+            guard $ not (csBreak state)
             (i,ch) <- Array.assocs (csChannels state)
             guard $ not (chMute ch)
             return $ if | Just (j, Recording) <- chActiveSlot ch ->
