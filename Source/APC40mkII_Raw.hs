@@ -122,18 +122,15 @@ inputOnlyButton note  = Control $ \out -> do
         inproc _ = return ()
     return inproc
 
-monoButton :: (Monad m) => Int -> Bool -> MIDIControl m Bool Bool
-monoButton note val0 = Control $ \out -> do
-    let inproc (Left (MIDI.MidiMessage _ (MIDI.NoteOn note' vel)))
-            | note == note'  = out (Right (vel /= 0))
-        inproc (Left (MIDI.MidiMessage _ (MIDI.NoteOff note' _)))
-            | note == note'  = out (Right False)
-        inproc (Right True)  = out (Left (MIDI.MidiMessage 1 (MIDI.NoteOn note 127)))
-        inproc (Right False) = out (Left (MIDI.MidiMessage 1 (MIDI.NoteOff note 0)))
-        inproc _ = return ()
-    -- reset button
-    inproc (Right val0)
-    return inproc
+monoButton :: (MonadSched m, MonadRefs m) => Int -> Bool -> MIDIControl m Bool Bool
+monoButton note val0 = initialize (Right val0) . statelessProc $ \case
+    Just (Left (MIDI.MidiMessage _ (MIDI.NoteOn note' vel)))
+        | note == note'  -> return $ Just (Right (vel /= 0))
+    Just (Left (MIDI.MidiMessage _ (MIDI.NoteOff note' _)))
+        | note == note'  -> return $ Just (Right False)
+    Just (Right True)  -> return $ Just (Left (MIDI.MidiMessage 1 (MIDI.NoteOn note 127)))
+    Just (Right False) -> return $ Just (Left (MIDI.MidiMessage 1 (MIDI.NoteOff note 0)))
+    _ -> return $ Nothing
 
 channelMonoButton :: (Monad m) => Int -> Bool -> MIDIControl m (Int,Bool) (Int,Bool)
 channelMonoButton note val0 = Control $ \out -> do

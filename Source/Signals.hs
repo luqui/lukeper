@@ -23,14 +23,14 @@ instance (Ord t, Monad m) => Applicative (WindowT t m) where
     (<*>) = ap
 
 instance (Ord t, Monad m) => Monad (WindowT t m) where
-    return x = WindowT (\(tmin, tmax) -> return (tmax, x)) -- return the largest valid window
+    return x = WindowT (\(_, tmax) -> return (tmax, x)) -- return the largest valid window
     m >>= f = WindowT $ \(tmin, tmax) -> do
         (t', x) <- runWindowT m (tmin, tmax)
         (t'', y) <- runWindowT (f x) (tmin, t')
         return (t'', y)
 
 instance MonadTrans (WindowT t) where
-    lift m = WindowT (\(tmin, tmax) -> (tmax,) <$> m)
+    lift m = WindowT (\(_, tmax) -> (tmax,) <$> m)
 
 window :: (Monad m) => WindowT t m (t,t)
 window = WindowT (\(tmin, tmax) -> return (tmax, (tmin, tmax)))

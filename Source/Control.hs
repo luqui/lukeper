@@ -1,4 +1,4 @@
-{-# LANGUAGE FlexibleContexts, GeneralizedNewtypeDeriving, TypeFamilies #-}
+{-# LANGUAGE FlexibleContexts, GeneralizedNewtypeDeriving, LambdaCase, TupleSections, TypeFamilies #-}
 
 module Control where
 
@@ -9,14 +9,47 @@ import qualified Data.IORef as IORef
 import qualified System.MIDI as MIDI
 
 import Control.Applicative (liftA2)
-import Control.Monad (filterM)
-import Control.Monad.Trans.Class (lift)
+import Control.Monad (filterM, when)
+import Control.Monad.Trans.Class (MonadTrans(..))
+import Control.Monad.ST
+import Data.STRef
 
 import Control.Category
 
+import qualified Signals as Sig
 
 newtype Control m i o = Control { instControl :: (o -> m ()) -> m (i -> m ()) }
 
+stateProc :: (MonadRefs m, MonadSched m) 
+          => s -> (s -> Maybe a -> Sig.WindowT Time m (s, Maybe b)) 
+          -> Control m a b 
+stateProc s0 trans = Control $ \out -> do
+    stateref <- newRef s0
+    
+    let update e = do
+            state <- readRef stateref
+            t <- now
+            (endt, (state', event)) <- Sig.runWindowT (trans state e) (t, eternity)
+            writeRef stateref state'
+            case event of
+                Nothing -> return ()
+                Just b -> out b
+            when (endt /= eternity) $
+                at endt (update Nothing)
+            
+    after zeroV (update Nothing)
+    return (update . Just)
+
+statelessProc :: (MonadRefs m, MonadSched m) 
+              => (Maybe a -> Sig.WindowT Time m (Maybe b))
+              -> Control m a b
+statelessProc trans = stateProc () (\_ m -> ((),) <$> trans m)
+
+initialize :: (Monad m) => b -> Control m a b -> Control m a b
+initialize b ctrl = Control $ \out -> do
+    f <- instControl ctrl out
+    out b
+    return f
 
 -- Bizarrely, composition needs Monad, but none of the Arrow combis do (except composition I guess).
 instance (Monad m) => Category (Control m) where
@@ -60,7 +93,6 @@ class (Monad m) => MonadRefs m where
 
 class (Monad m) => MonadSched m where
     now :: m Time
-    -- millisecs
     at :: Time -> m () -> m ()
 
 after :: (MonadSched m) => TimeDiff -> m () -> m ()
@@ -79,6 +111,14 @@ instance (MonadRefs m) => MonadRefs (StateT.StateT s m) where
     newRef = lift . newRef
     readRef = lift . readRef
     writeRef r = lift . writeRef r
+    
+
+instance MonadRefs (ST s) where
+    type Ref (ST s) = STRef s
+    newRef = newSTRef
+    readRef = readSTRef
+    writeRef = writeSTRef
+
 
 
 class AffineSpace v where
@@ -123,6 +163,9 @@ instance VectorSpace TimeDiff where
     type Scalar TimeDiff = Double
     zeroV = TimeDiff 0
     s *^ TimeDiff a = TimeDiff (s * a)
+
+eternity :: Time
+eternity = Unbased (TimeDiff (1/0))
 
 fromSamples :: Int -> TimeDiff
 fromSamples = TimeDiff . fromIntegral

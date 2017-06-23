@@ -3912,6 +3912,7 @@
                     build/Debug/Loop.o,
                     build/Debug/PureLoop.o,
                     build/Debug/Sequencer.o,
+                    build/Debug/Signals.o,
                     build/Debug/Control.o,
 					"-bundle",
 					"-llukeper",
