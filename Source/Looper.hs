@@ -381,13 +381,8 @@ runLooper inbuf = do
     S.processMidiEvents
     outbufs <- iterWhileM $ do
         time0 <- S.getCurrentTime
-        more <- S.nextEvent targetTime
-        if more then do
-            time1 <- S.getCurrentTime
-            outbuf <- runLooper1 (Vector.slice (toSamples (time0 ^-^ startTime)) (toSamples (time1 ^-^ time0)) inbuf)
-            return $ Just outbuf
-        else do
-            return Nothing
+        S.nextWindow targetTime $ \time1 ->
+            runLooper1 (Vector.slice (toSamples (time0 ^-^ startTime)) (toSamples (time1 ^-^ time0)) inbuf)
     let retbuf = mconcat outbufs
     M.when (Vector.length retbuf /= Vector.length inbuf) $ 
         writeLog ("Return buffer size " ++ show (Vector.length retbuf) 

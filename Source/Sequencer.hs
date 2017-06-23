@@ -99,13 +99,6 @@ processEvent i = SequencerT $ do
             Nothing -> (action Seq.<|) <$> go hs
     go _ = error "impossible non-matching view pattern"
 
-tick :: (MonadIO m) => Int -> SequencerT i o m ()
-tick window = SequencerT $ do
-    time <- (^+^ fromSamples window) <$> getSequencerT getCurrentTime
-    getSequencerT $ do
-        loopWhileM (nextEvent time)
-        processMidiEvents
-
 processMidiEvents :: (MonadIO m) => SequencerT i o m ()
 processMidiEvents = SequencerT $ do
     messages <- liftIO . (fmap.fmap) (\(MIDI.MidiEvent _ m) -> m) . MIDI.getEvents . fst 
@@ -113,21 +106,33 @@ processMidiEvents = SequencerT $ do
     ctrl <- gets seqController
     getSequencerT $ mapM_ (ctrl . Left) messages
 
--- Returns True if there are (possibly) more events before the given timestamp.
--- There might not be any, but if not, then the next call will return false.
--- If nextEvent returns True, it had no side effects that call.
-nextEvent :: (Monad m) => Time -> SequencerT i o m Bool
-nextEvent tmax = SequencerT $ do
+-- Runs the given action in the largest possible contiguous window (in which no
+-- events occur) up until the given end time.  The action is given the end time
+-- of the window (the beginning of the window is the current time at which
+-- nextWindow is called). If the window is empty and there are no events (i.e.
+-- nextWidow) has done nothing, then the action is not run and Nothing is
+-- returned.
+nextWindow :: (Monad m) => Time -> (Time -> SequencerT i o m a) -> SequencerT i o m (Maybe a)
+nextWindow tmax action = SequencerT $ do
     view <- Map.minViewWithKey <$> gets seqTimedEvents
+    time <- getSequencerT getCurrentTime
     case view of
-        Just ((t,action),map') | t <= tmax -> do
-            modify $ \s -> s { seqCurrentTime = t, seqTimedEvents = map' }
-            getSequencerT action
-            return True
-        _ -> do
-            time <- getSequencerT getCurrentTime
+        Just ((t,event),map') | t <= tmax -> do
+            -- action might add timed events, so remove this event from the queue immediately.
+            modify $ \s -> s { seqTimedEvents = map' }
+            res <- getSequencerT (action t)
+            -- After executing action, update the current time to the end of the window
+            modify $ \s -> s { seqCurrentTime = t }
+            getSequencerT event
+            return (Just res)
+        _ | time < tmax -> do
+            -- There are no events but there is a nonempty window.
+            res <- getSequencerT (action tmax)
             modify $ \s -> s { seqCurrentTime = tmax }
-            return (time < tmax)
+            return (Just res)
+        _ -> do
+            -- No events and empty window.
+            return Nothing
 
 getCurrentTime :: (Monad m) => SequencerT i o m Time
 getCurrentTime = SequencerT $ gets seqCurrentTime
