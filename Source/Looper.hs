@@ -20,6 +20,7 @@ import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Primitive (RealWorld)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.State (StateT(..), get, gets, put, modify, runStateT)
+import Data.List (foldl')
 import Data.Maybe (catMaybes, isNothing)
 import Data.Monoid (Monoid(..), (<>))
 
@@ -338,7 +339,7 @@ activateTransition t = do
 
 sumV :: Int -> [Vector.Vector Double] -> Vector.Vector Double
 sumV l [] = Vector.replicate l 0
-sumV _ (v:vs) = foldr (Vector.zipWith (+)) v vs
+sumV _ (v:vs) = foldl' (Vector.zipWith (+)) v vs
 
 renderMix :: Vector.Vector Double -> LooperM (Vector.Vector Double)
 renderMix inbuf = do
