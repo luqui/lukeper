@@ -113,6 +113,9 @@ processMidiEvents = SequencerT $ do
     ctrl <- gets seqController
     getSequencerT $ mapM_ (ctrl . Left) messages
 
+-- Returns True if there are (possibly) more events before the given timestamp.
+-- There might not be any, but if not, then the next call will return false.
+-- If nextEvent returns True, it had no side effects that call.
 nextEvent :: (Monad m) => Time -> SequencerT i o m Bool
 nextEvent tmax = SequencerT $ do
     view <- Map.minViewWithKey <$> gets seqTimedEvents

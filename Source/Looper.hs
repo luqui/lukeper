@@ -16,6 +16,7 @@ import qualified System.IO as IO
 
 import Control.Arrow (second)
 import Control.Monad (forM, forM_, guard)
+import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Primitive (RealWorld)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.State (StateT(..), get, gets, put, modify, runStateT)
@@ -365,6 +366,12 @@ iterWhileM m = m >>= \case
     Just x -> (x:) <$> iterWhileM m
     Nothing -> return []
 
+writeLog :: (MonadIO m) => String -> m ()
+writeLog msg = liftIO $ do
+    time <- Clock.getCurrentTime
+    IO.withFile "/tmp/looperlog" IO.AppendMode $ \fh -> do
+        IO.hPutStrLn fh $ show time ++ ": " ++ msg
+
 runLooper :: Vector.Vector Double -> LooperM (Vector.Vector Double)
 runLooper inbuf = do
     startTime <- S.getCurrentTime
@@ -382,10 +389,13 @@ runLooper inbuf = do
             return Nothing
     let retbuf = mconcat outbufs
     M.when (Vector.length retbuf /= Vector.length inbuf) $ 
-        error ("Return buffer size " ++ show (Vector.length retbuf) 
+        writeLog ("Return buffer size " ++ show (Vector.length retbuf) 
             ++ " is not the same as input buffer size " ++ show (Vector.length inbuf))
     return $ mconcat outbufs
     
+-- runLooper1 runs the looper on a "contiguous fragment" of the event stream -- i.e., runLooper proper
+-- guarantees that for the duration of inbuf (which could be arbitrarily small) no events or state
+-- changes take place.  TODO this should somehow be represented in the type.
 runLooper1 :: Vector.Vector Double -> LooperM (Vector.Vector Double)
 runLooper1 inbuf = do
     let winsize = Vector.length inbuf
@@ -417,6 +427,10 @@ runLooper1 inbuf = do
         lift $ modify (\s -> s { csQueue = [] })
         forM_ (reverse queue) (activateTransition . snd)
 
+    endtime <- S.getCurrentTime
+    M.when (time /= endtime) $ 
+        writeLog ("Start time " ++ show time ++ " is not equal to end time " ++ show endtime)
+    
     -- It is important that renderMix reads the *new* state after running the queue.
     renderMix inbuf
 
@@ -526,9 +540,7 @@ hs_looper_exit state = wrapErrors "hs_looper_exit" $ do
 
 wrapErrors :: String -> IO a -> IO a
 wrapErrors entry action = Exc.catch action $ \(e :: Exc.SomeException) -> do
-    time <- Clock.getCurrentTime
-    IO.withFile "/tmp/looperlog" IO.AppendMode $ \fh -> do
-        IO.hPutStrLn fh $ show time ++ " : " ++ entry ++ " : " ++ show e
+    writeLog $ "FATAL " ++ entry ++ " : " ++ show e
     Exc.throwIO e
 
 (>>) :: (Monad m) => m () -> m a -> m a
