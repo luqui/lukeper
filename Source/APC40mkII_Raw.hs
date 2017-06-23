@@ -188,12 +188,11 @@ rgbMatrix = Control $ \out -> do
         | 0 <= n && n < 40 = Just (Coord (n `mod` 8 + 1, 4 - n `div` 8 + 1))
         | otherwise = Nothing
 
-faders :: (Monad m) => MIDIControl m Void (Int, Double)  -- (fader id (1..9), level [0,1])
-faders = Control $ \out -> do
-    return $ \case
-        Left (MIDI.MidiMessage ch (MIDI.CC 0x07 v)) -> out (Right (ch, fromIntegral v / 127))
-        Left (MIDI.MidiMessage _  (MIDI.CC 0x0e v)) -> out (Right (9, fromIntegral v / 127))
-        _ -> return ()
+faders :: (MonadRefs m, MonadSched m) => MIDIControl m Void (Int, Double)  -- (fader id (1..9), level [0,1])
+faders = filterProc $ \case
+    Left (MIDI.MidiMessage ch (MIDI.CC 0x07 v)) -> Just (Right (ch, fromIntegral v / 127))
+    Left (MIDI.MidiMessage _  (MIDI.CC 0x0e v)) -> Just (Right (9, fromIntegral v / 127))
+    _ -> Nothing
     
 data APCOutMessage
     = OutMatrixButton Coord LongPress
