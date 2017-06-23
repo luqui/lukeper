@@ -9,7 +9,6 @@ import qualified Control.Exception as Exc
 import qualified Control.Monad as M
 import qualified Data.Time.Clock as Clock
 import qualified Data.Vector.Unboxed as Vector
-import qualified Data.Vector.Unboxed.Mutable as MVector
 import qualified Foreign.Ptr as Foreign
 import qualified System.IO as IO
 
@@ -17,7 +16,6 @@ import qualified System.IO as IO
 import Control.Arrow (second)
 import Control.Monad (forM, forM_, guard)
 import Control.Monad.IO.Class (MonadIO, liftIO)
-import Control.Monad.Primitive (RealWorld)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.State (StateT(..), get, gets, put, modify, runStateT)
 import Data.List (foldl')
@@ -48,8 +46,6 @@ foreign export ccall hs_looper_main
     -> IO ()
 foreign export ccall hs_looper_uilog :: StablePtr LooperState -> IO C.CString
 foreign export ccall hs_looper_exit :: StablePtr LooperState -> IO ()
-
-type MVector = MVector.MVector RealWorld
 
 newtype ControlIn = ControlIn { getControlIn :: APC.APCOutMessage }
     deriving (Eq)
@@ -433,13 +429,10 @@ runLooper1 inbuf = do
         thisBar = floor (ratio (time ^-^ phase) period) :: Int 
         lastBar = floor (ratio ((time ^-^ phase) ^-^ winsize) period)
 
-type IOBuffers = MVector Double
-
 data LooperState = LooperState 
     { lsMidiDevs    :: Devs
     , lsFrame       :: Vector.Vector Double -> LooperM (Vector.Vector Double)
     , lsSeqState    :: IORef (S.SeqState LooperM ControlIn ControlOut, ControlState)
-    , lsBuffers     :: IORef (Int, IOBuffers)
     , lsCurrentTime :: IORef Time
     }
 
@@ -457,11 +450,9 @@ hs_looper_init = wrapErrors "hs_looper_init" $ do
     ((time0, seqstate), superstate) <- flip runStateT badstate $ bootlooper
     seqstateref <- newIORef (seqstate, superstate)
     currenttimeref <- newIORef time0
-    buffers <- newIORef =<< (256,) <$> makeBuffers 256  -- a guess, will be reinitialized if incorrect
     newStablePtr $ LooperState { lsMidiDevs = devs
                                , lsFrame = runLooper
                                , lsSeqState = seqstateref
-                               , lsBuffers = buffers
                                , lsCurrentTime = currenttimeref
                                }
 
@@ -470,28 +461,10 @@ hs_looper_main state window input output channels = wrapErrors "hs_looper_main" 
     looperstate <- deRefStablePtr state
     hsLooperMain looperstate (fromIntegral window) (fromIntegral input) (fromIntegral output) channels
 
-makeBuffers :: Int -> IO IOBuffers
-makeBuffers window = buf
-    where
-    buf = MVector.new window
-
-getBuffers :: LooperState -> Int -> IO IOBuffers
-getBuffers state window = do
-    (bufwin, buffers) <- readIORef (lsBuffers state)
-    if bufwin == window
-        then return buffers
-        else do
-            newbuffers <- makeBuffers window
-            writeIORef (lsBuffers state) (window, newbuffers)
-            return newbuffers
-
 hsLooperMain :: LooperState -> Int -> Int -> Int -> Foreign.Ptr (Foreign.Ptr Float) -> IO ()
 hsLooperMain looperstate window _inchannels _outchannels channels = do
     inbuf <- peekElemOff channels 0
-    inbufarray <- getBuffers looperstate window
-    forM_ [0..window-1] $ \i -> MVector.unsafeWrite inbufarray i =<< realToFrac <$> peekElemOff inbuf i
-
-    inbufvector <- Vector.freeze inbufarray
+    inbufvector <- Vector.generateM window $ \i -> realToFrac <$> peekElemOff inbuf i
     
     (seqstate, superstate) <- readIORef (lsSeqState looperstate)
     curtime <- readIORef (lsCurrentTime looperstate)
