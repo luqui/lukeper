@@ -35,6 +35,9 @@ instance MonadTrans (WindowT t) where
 window :: (Monad m) => WindowT t m (t,t)
 window = WindowT (\(tmin, tmax) -> return (tmax, (tmin, tmax)))
 
+instant :: (Monad m) => a -> WindowT t m a
+instant x = WindowT (\(tmin, _) -> return (tmin, x))
+
 -- With this monad instance, everything is uniform as long as events occur at
 -- the *beginning* of their window.
 

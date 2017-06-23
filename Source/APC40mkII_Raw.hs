@@ -44,8 +44,6 @@ module APC40mkII_Raw where
 import Prelude hiding ((.), id)
 import Control.Category
 
-import Control.Monad (forM_)
-
 import qualified Control.Arrow as Arrow
 import qualified Data.Array as Array
 import qualified System.MIDI.Base as MIDI
@@ -78,37 +76,35 @@ data RGBColorState
     | RGBBlinking Subdiv RGBColor RGBColor
     deriving (Eq, Show)
 
-rgbButton :: (MonadRefs m) => Int -> MIDIControl m RGBColorState Bool
-rgbButton note = Control $ \out -> do
-    let sendmidi = out . Left
-    let sendevent = out . Right
-    sendmidi (MIDI.MidiMessage 1 (MIDI.NoteOff note 0))
-    return $ \case
-        Left midimessage -> getevents sendevent midimessage
-        Right colorstate -> senddiff sendmidi colorstate
+rgbButton :: (MonadRefs m, MonadSched m) => Int -> MIDIControl m RGBColorState Bool
+rgbButton note = initialize (Left (MIDI.MidiMessage 1 (MIDI.NoteOff note 0))) . multiOutProc $ \case
+        Left midimessage -> map Right $ getevents midimessage
+        Right colorstate -> map Left $ senddiff colorstate
     where
-    senddiff :: (Monad m) => (MIDI.MidiMessage -> m ()) -> RGBColorState -> m ()
-    senddiff sendmidi RGBOff = sendmidi $ MIDI.MidiMessage 1 (MIDI.NoteOff note 0)
-    senddiff sendmidi (RGBSolid color) = sendmidi $ setPrimary color
-    senddiff sendmidi (RGBOneShot  subdiv color1 color2) = do
-        sendmidi $ setPrimary color1
-        sendmidi $ MIDI.MidiMessage (1+1 +fromEnum subdiv) (MIDI.NoteOn note (rgbColorToVel color2))
-    senddiff sendmidi (RGBPulsing  subdiv color1 color2) = do
-        sendmidi $ setPrimary color1
-        sendmidi $ MIDI.MidiMessage (1+6 +fromEnum subdiv) (MIDI.NoteOn note (rgbColorToVel color2))
-    senddiff sendmidi (RGBBlinking subdiv color1 color2) = do
-        sendmidi $ setPrimary color1
-        sendmidi $ MIDI.MidiMessage (1+11+fromEnum subdiv) (MIDI.NoteOn note (rgbColorToVel color2))
-                              --     ^
-                              -- MidiMessage channels are 1-based
+    senddiff RGBOff = [MIDI.MidiMessage 1 (MIDI.NoteOff note 0)]
+    senddiff (RGBSolid color) = [setPrimary color]
+    senddiff (RGBOneShot  subdiv color1 color2) =
+        [ setPrimary color1
+        , MIDI.MidiMessage (1+1 +fromEnum subdiv) (MIDI.NoteOn note (rgbColorToVel color2))
+        ]
+    senddiff (RGBPulsing  subdiv color1 color2) = 
+        [ setPrimary color1
+        , MIDI.MidiMessage (1+6 +fromEnum subdiv) (MIDI.NoteOn note (rgbColorToVel color2))
+        ]
+    senddiff (RGBBlinking subdiv color1 color2) =
+        [ setPrimary color1
+        , MIDI.MidiMessage (1+11+fromEnum subdiv) (MIDI.NoteOn note (rgbColorToVel color2))
+        ] 
+                     --     ^
+                     -- MidiMessage channels are 1-based
 
     setPrimary color = MIDI.MidiMessage 1 (MIDI.NoteOn note (rgbColorToVel color))
 
-    getevents sendevent (MIDI.MidiMessage _ (MIDI.NoteOff note' _)) 
-        | note == note' = sendevent False
-    getevents sendevent (MIDI.MidiMessage _ (MIDI.NoteOn note' vel))
-        | note == note' = sendevent (vel /= 0)
-    getevents _ _ = return ()
+    getevents (MIDI.MidiMessage _ (MIDI.NoteOff note' _)) 
+        | note == note' = [False]
+    getevents (MIDI.MidiMessage _ (MIDI.NoteOn note' vel))
+        | note == note' = [vel /= 0]
+    getevents _ = []
 
 longRGBButton :: (MonadRefs m, MonadSched m) => Int -> MIDIControl m RGBColorState LongPress
 longRGBButton note = right (longPress (fromMillisec 500)) . rgbButton note
@@ -123,46 +119,45 @@ inputOnlyButton note  = Control $ \out -> do
     return inproc
 
 monoButton :: (MonadSched m, MonadRefs m) => Int -> Bool -> MIDIControl m Bool Bool
-monoButton note val0 = initialize (Right val0) . statelessProc $ \case
-    Just (Left (MIDI.MidiMessage _ (MIDI.NoteOn note' vel)))
-        | note == note'  -> return $ Just (Right (vel /= 0))
-    Just (Left (MIDI.MidiMessage _ (MIDI.NoteOff note' _)))
-        | note == note'  -> return $ Just (Right False)
-    Just (Right True)  -> return $ Just (Left (MIDI.MidiMessage 1 (MIDI.NoteOn note 127)))
-    Just (Right False) -> return $ Just (Left (MIDI.MidiMessage 1 (MIDI.NoteOff note 0)))
-    _ -> return $ Nothing
+monoButton note val0 = initialize (Right val0) . filterProc $ \case
+    Left (MIDI.MidiMessage _ (MIDI.NoteOn note' vel))
+        | note == note'  -> Just (Right (vel /= 0))
+    Left (MIDI.MidiMessage _ (MIDI.NoteOff note' _))
+        | note == note'  -> Just (Right False)
+    Right True  -> Just (Left (MIDI.MidiMessage 1 (MIDI.NoteOn note 127)))
+    Right False -> Just (Left (MIDI.MidiMessage 1 (MIDI.NoteOff note 0)))
+    _ -> Nothing
 
-channelMonoButton :: (Monad m) => Int -> Bool -> MIDIControl m (Int,Bool) (Int,Bool)
-channelMonoButton note val0 = Control $ \out -> do
-    let inproc (Left (MIDI.MidiMessage ch (MIDI.NoteOn note' vel)))
-            | note == note'       = out (Right (ch, vel /= 0))
-        inproc (Left (MIDI.MidiMessage ch (MIDI.NoteOff note' _)))
-            | note == note'       = out (Right (ch, False))
-        inproc (Right (ch,True))  = out (Left (MIDI.MidiMessage ch (MIDI.NoteOn note 127)))
-        inproc (Right (ch,False)) = out (Left (MIDI.MidiMessage ch (MIDI.NoteOff note 0)))
-        inproc _ = return ()
-    forM_ [1..8] $ \ch -> inproc (Right (ch, val0))
-    return inproc
+channelMonoButton :: (MonadRefs m, MonadSched m) => Int -> Bool -> MIDIControl m (Int,Bool) (Int,Bool)
+channelMonoButton note val0 = inits . filterProc $ proc
+    where
+    proc (Left (MIDI.MidiMessage ch (MIDI.NoteOn note' vel)))
+            | note == note'       = Just (Right (ch, vel /= 0))
+    proc (Left (MIDI.MidiMessage ch (MIDI.NoteOff note' _)))
+            | note == note'       = Just (Right (ch, False))
+    proc (Right (ch,True))  = Just (Left (MIDI.MidiMessage ch (MIDI.NoteOn note 127)))
+    proc (Right (ch,False)) = Just (Left (MIDI.MidiMessage ch (MIDI.NoteOff note 0)))
+    proc _ = Nothing
+    inits p = foldr initialize p [ m | ch <- [1..8], Just m <- [proc (Right (ch, val0))] ]
 
-relativeControl :: (Monad m) => Int -> MIDIControl m Void Int
-relativeControl cc = Control $ \out -> do
-    return $ \case
-        Left (MIDI.MidiMessage _ (MIDI.CC cc' val)) | cc == cc' ->
-            if val < 64 then out (Right val)
-                        else out (Right (val-128))
-        _ -> return ()
+relativeControl :: (MonadSched m, MonadRefs m) => Int -> MIDIControl m Void Int
+relativeControl cc = filterProc $ \case
+    Left (MIDI.MidiMessage _ (MIDI.CC cc' val)) | cc == cc' -> 
+        Just . Right $ if val < 64 then val
+                                   else val-128
+    _ -> Nothing
 
-dial :: (Monad m) => Int -> MIDIControl m Int Int
-dial cc = Control $ \out -> do
-    let inproc (Left (MIDI.MidiMessage _ (MIDI.CC cc' val)))
-            | cc == cc' = out (Right val)
-        inproc (Right val) = out (Left (MIDI.MidiMessage 1 (MIDI.CC cc val)))
-        inproc _ = return ()
-    inproc (Right 0)
-    return inproc
+dial :: (MonadRefs m, MonadSched m) => Int -> MIDIControl m Int Int
+dial cc = initialize (msg 0) . filterProc $ \case
+    Left (MIDI.MidiMessage _ (MIDI.CC cc' val))
+        | cc == cc' -> Just (Right val)
+    Right val -> Just (msg val)
+    _ -> Nothing
+    where
+    msg val = Left (MIDI.MidiMessage 1 (MIDI.CC cc val))
 
 -- dial ids are 1 based
-dials :: (Monad m) => MIDIControl m (Int, Int) (Int, Int)
+dials :: (MonadRefs m, MonadSched m) => MIDIControl m (Int, Int) (Int, Int)
 dials = Control $ \out -> do
     controls <- mapM (\ctrl -> instControl (arr (Arrow.right (ctrl,)) . dial (0x10+ctrl-1)) out) [1..8]
     return $ \case

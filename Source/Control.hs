@@ -51,6 +51,18 @@ initialize b ctrl = Control $ \out -> do
     out b
     return f
 
+filterProc :: (MonadRefs m, MonadSched m) => (a -> Maybe b) -> Control m a b
+filterProc f = statelessProc (\case
+    Nothing -> return Nothing
+    Just x -> return (f x))
+
+multiOutProc :: (MonadRefs m, MonadSched m) => (a -> [b]) -> Control m a b
+multiOutProc f = stateProc [] $ \pending input ->
+    let newouts = maybe id (\x -> (++ f x)) input in
+    case newouts pending of
+        [] -> return ([], Nothing)
+        (x:xs) -> Sig.instant (xs, Just x)
+
 -- Bizarrely, composition needs Monad, but none of the Arrow combis do (except composition I guess).
 instance (Monad m) => Category (Control m) where
     id = Control $ return
