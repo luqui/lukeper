@@ -345,6 +345,7 @@ renderMix :: Vector.Vector Double -> LooperM (Vector.Vector Double)
 renderMix inbuf = do
     state <- lift get
     time <- S.getCurrentTime
+    winsize <- S.getWindowSize
     let (updates, outs) = mconcat $ do
             guard $ not (csBreak state)
             (i,ch) <- Array.assocs (csChannels state)
@@ -355,13 +356,13 @@ renderMix inbuf = do
                         | Just (j, Playing phase) <- chActiveSlot ch ->
                             let coord = APC.Coord (i,j) in
                             ([], [Loop.indexRange (toSamples (time ^-^ phase)) 
-                                                  (Vector.length inbuf)
+                                                  (toSamples winsize)
                                                   (csLoops state Array.! coord)
                                                   (csLevel state * chLevel ch)])
                         | otherwise ->
                             ([], [])
     lift $ put (state { csLoops = csLoops state Array.// updates }) 
-    return $ sumV (Vector.length inbuf) outs
+    return $ sumV (toSamples winsize) outs
 
 iterWhileM :: (Monad m) => m (Maybe a) -> m [a]
 iterWhileM m = m >>= \case
@@ -377,13 +378,11 @@ writeLog msg = liftIO $ do
 runLooper :: Vector.Vector Double -> LooperM (Vector.Vector Double)
 runLooper inbuf = do
     startTime <- S.getCurrentTime
-    let targetTime = startTime ^+^ fromSamples (Vector.length inbuf)
 
     S.processMidiEvents
-    outbufs <- iterWhileM $ do
-        time0 <- S.getCurrentTime
-        S.nextWindow targetTime $ \time1 ->
-            runLooper1 (Vector.slice (toSamples (time0 ^-^ startTime)) (toSamples (time1 ^-^ time0)) inbuf)
+    outbufs <- S.splitWindows $ do
+        (time0,time1) <- S.getWindow
+        runLooper1 (Vector.slice (toSamples (time0 ^-^ startTime)) (toSamples (time1 ^-^ time0)) inbuf)
     let retbuf = mconcat outbufs
     M.when (Vector.length retbuf /= Vector.length inbuf) $ 
         writeLog ("Return buffer size " ++ show (Vector.length retbuf) 
@@ -395,7 +394,7 @@ runLooper inbuf = do
 -- changes take place.  TODO this should somehow be represented in the type.
 runLooper1 :: Vector.Vector Double -> LooperM (Vector.Vector Double)
 runLooper1 inbuf = do
-    let winsize = Vector.length inbuf
+    winsize <- S.getWindowSize
     state <- lift get
     time <- S.getCurrentTime
 
@@ -423,29 +422,25 @@ runLooper1 inbuf = do
         let queue = csQueue state
         lift $ modify (\s -> s { csQueue = [] })
         forM_ (reverse queue) (activateTransition . snd)
-
-    endtime <- S.getCurrentTime
-    M.when (time /= endtime) $ 
-        writeLog ("Start time " ++ show time ++ " is not equal to end time " ++ show endtime)
     
     -- It is important that renderMix reads the *new* state after running the queue.
     renderMix inbuf
 
     where
-    quantPoint :: Int -> TimeDiff -> Time -> Time -> Bool
+    quantPoint :: TimeDiff -> TimeDiff -> Time -> Time -> Bool
     quantPoint winsize period phase time = thisBar /= lastBar
         where
         thisBar = floor (ratio (time ^-^ phase) period) :: Int 
-        lastBar = floor (ratio ((time ^-^ phase) ^-^ fromSamples winsize) period)
+        lastBar = floor (ratio ((time ^-^ phase) ^-^ winsize) period)
 
 type IOBuffers = MVector Double
 
 data LooperState = LooperState 
     { lsMidiDevs    :: Devs
-    , lsStartTime   :: Time
     , lsFrame       :: Vector.Vector Double -> LooperM (Vector.Vector Double)
     , lsSeqState    :: IORef (S.SeqState LooperM ControlIn ControlOut, ControlState)
     , lsBuffers     :: IORef (Int, IOBuffers)
+    , lsCurrentTime :: IORef Time
     }
 
 apc40Raw :: MIDIControl LooperM ControlOut ControlIn
@@ -455,20 +450,19 @@ hs_looper_init :: IO (StablePtr LooperState)
 hs_looper_init = wrapErrors "hs_looper_init" $ do
     devs <- openDevs
     let badstate = error "first order of business must be to set state"
-    let startlooper = do
-            () <- startLooper
-            S.getCurrentTime
-    ((time0, seqstate), superstate) <- 
-        runStateT 
-            (S.runSequencerT startlooper =<< S.bootSequencerT devs apc40Raw) 
-            badstate
+    let bootlooper = do
+            (time0, state) <- S.bootSequencerT devs apc40Raw
+            ((), state') <- S.runSequencerT startLooper (time0,time0) state
+            return (time0, state')
+    ((time0, seqstate), superstate) <- flip runStateT badstate $ bootlooper
     seqstateref <- newIORef (seqstate, superstate)
+    currenttimeref <- newIORef time0
     buffers <- newIORef =<< (256,) <$> makeBuffers 256  -- a guess, will be reinitialized if incorrect
     newStablePtr $ LooperState { lsMidiDevs = devs
-                               , lsStartTime = time0
                                , lsFrame = runLooper
                                , lsSeqState = seqstateref
                                , lsBuffers = buffers
+                               , lsCurrentTime = currenttimeref
                                }
 
 hs_looper_main :: StablePtr LooperState -> Word32 -> Word32 -> Word32 -> Foreign.Ptr (Foreign.Ptr Float) -> IO ()
@@ -500,9 +494,12 @@ hsLooperMain looperstate window _inchannels _outchannels channels = do
     inbufvector <- Vector.freeze inbufarray
     
     (seqstate, superstate) <- readIORef (lsSeqState looperstate)
+    curtime <- readIORef (lsCurrentTime looperstate)
+    let endtime = curtime ^+^ fromSamples window
     ((outvector, seqstate'), superstate') 
-        <- runStateT (S.runSequencerT (lsFrame looperstate inbufvector) seqstate) superstate
+        <- runStateT (S.runSequencerT (lsFrame looperstate inbufvector) (curtime,endtime) seqstate) superstate
     writeIORef (lsSeqState looperstate) (seqstate', superstate')
+    writeIORef (lsCurrentTime looperstate) endtime
 
     mainoutbuf <- peekElemOff channels 0
     
