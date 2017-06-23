@@ -1,110 +1,43 @@
-{-# LANGUAGE DeriveFunctor, ExistentialQuantification #-}
+{-# LANGUAGE DeriveFunctor, ExistentialQuantification, TupleSections #-}
 
 module Signals where
 
 import Prelude hiding (id, (.))
-import Control.Category
-import Control.Arrow
 import Control.Monad (ap)
 
--- There are a few different kinds of signal:
---   Piecewise: a "stepper", that takes on a series of values, each for an interval of time
---   Event: a series of time-stamped values ; a finite sum of "delta functions"
---   Continuous: continuously changing with time
---   Track:  an optimization of Continuous Double, working with Array windows
+import Control.Arrow
+import Control.Category
+import Control.Monad.Trans.Class
 
--- Each of these types has a different has a way an SF depends both covariantly and contravariantly.  
--- Let's look at some examples.  The arrows are to be taken as stateful.
---
---    Piecewise a ~> Piecewise b = t -> a -> (t,b)   -- we need the incoming t because it might affect how the state is updated
---    Event a     ~> Event b     = t -> (a -> () , Maybe (t,b))
---    Sample a    ~> Sample b    = t -> a -> b
---    Track ~> Track = Buffer a -> MBuffer s b -> ST s ()
---
---    Event a   ~>   Piecewise b = t -> ((t,b) , a -> (t,b))
---                                       ^^^^    ^^^^^^^^^^
---                            no incoming event   incoming event
---
---    Piecewise a ~> Event b = a -> t -> Maybe (t,b)
+newtype WindowT t m a = WindowT { runWindowT :: (t, t) -> m (t, a) }
 
--- There are some patterns here. 
---    ? -> Piecewise -- Needs to return the window, the (possible) beginning of the next piece
---    Piecewise -> ? -- Needs given window size, if only to update the state appropriately.
---    ? -> Event     -- Needs a given window, and returns Maybe (t,b), because the event may or may not occur
---    Event -> ?     -- Two alternatives: an event occurred in the window, or it did not.
---
--- Seems like a given window is necessary no matter what, except for Continuous
--- (one could say that the t in t -> b is the window, we just immediately
--- sample at the end of the window).  Continuous is strange when the arrows are
--- stateful, actually -- I guess instead of Continuous it's more like Sample,
--- where we trade one input sample for one output sample.  And now we still
--- need a window -- how long is a sample?
+-- In which we are given a potential time window as context, and we return the
+-- actual right endpoint.  The monad combines actions by returning the smallest
+-- window.
 
--- Assuming state and given window, we have:
---
---   (Piecewise a ~>)   = (a ->)
---   (Event a ~>)       = (a ->) x Id   = (Maybe a ->)
---   (~> Piecewise a)   = (-> (t, a))
---   (~> Event a)       = (-> Maybe (t, a))
---
--- There appears to be a symmetry surfacing.  The reason it is not perfect is
--- because of differences in calling convention.  For example, (Event a ~>) is
--- not (Maybe (t, a) ->) because we assume that the function is called at transitions,
--- so we know that if there is an event, its incoming time will be 0.
---
--- Perhaps we can make the same assumption on the other end, and assume that if
--- an event occurs, it occurs at the end of the window.  And so we can use this
--- as a base abstraction:
+instance (Functor m) => Functor (WindowT t m) where
+    fmap f (WindowT w) = WindowT ((fmap.fmap.fmap) f w)
 
-newtype Window t a = Window { runWindow :: t -> (t, a) }
-
--- In which we are given a maximum time window, and we return the actual length
--- of the window together with a value.  There is a monad on Window, in which
--- binding runs the first action, then the second action with the remaining
--- time (if any). 
-
-instance Functor (Window t) where
-    fmap f (Window w) = Window ((fmap.fmap) f w)
-
-instance (Ord t) => Applicative (Window t) where
+instance (Ord t, Monad m) => Applicative (WindowT t m) where
     pure = return
     (<*>) = ap
 
-instance (Ord t) => Monad (Window t) where
-    return x = Window (\t -> (t, x)) -- return the largest valid window
-    m >>= f = Window $ \t ->
-        let (t', x) = runWindow m t
-            (t'', y) = runWindow (f x) t'
-        in (t'', y)
+instance (Ord t, Monad m) => Monad (WindowT t m) where
+    return x = WindowT (\(tmin, tmax) -> return (tmax, x)) -- return the largest valid window
+    m >>= f = WindowT $ \(tmin, tmax) -> do
+        (t', x) <- runWindowT m (tmin, tmax)
+        (t'', y) <- runWindowT (f x) (tmin, t')
+        return (t'', y)
 
--- We require that the output time is always <= input time.  Then it looks just
--- like a state monad!  (Another possibility is 
---    (t'', y) = runWindow (f x) t
--- and returning min t' t'', for a more "parallel" feel.  There should not be any 
--- semantic difference in what we are trying to model.
+instance MonadTrans (WindowT t) where
+    lift m = WindowT (\(tmin, tmax) -> (tmax,) <$> m)
 
-windowSize :: Window t t
-windowSize = Window (\t -> (t, t))
-
-restrict :: (Ord t) => t -> Window t ()
-restrict t = Window (\win -> (min t win, ()))
+window :: (Monad m) => WindowT t m (t,t)
+window = WindowT (\(tmin, tmax) -> return (tmax, (tmin, tmax)))
 
 -- With this monad instance, everything is uniform as long as events occur at
 -- the *beginning* of their window.
 
---
--- Taking (->) to mean Kliesli (Window t), we get
---
---   (Piecewise a ~>) = (a ->)
---   (Event a ~>)     = (Maybe a ->)
---   (~> Piecewise a) = (-> a)
---   (~> Event a)     = (-> Maybe a)
---
--- Which shows us that Piecewise = a and Event = Maybe a, at least
--- representationally.  There are implicit differences, for example, two events
--- can not come at different times without a Nothing in between.
-
--- Then to represent local states, we can use an arrow.
 
 data Stateful p a b = forall s. Stateful s (p (s,a) (s,b))
 
@@ -164,9 +97,9 @@ instance ArrowLoop p => ArrowLoop (Stateful p) where
 -- With the Window monad and Stateful arrows at our disposal, we can now define
 -- our signal transform type.
 
-type SigTrans t = Stateful (Kleisli (Window t))
+type SigTrans t m = Stateful (Kleisli (WindowT t m))
 
-stateProc :: s -> (s -> a -> Window t (s,b)) -> SigTrans t a b
+stateProc :: s -> (s -> a -> WindowT t m (s,b)) -> SigTrans t m a b
 stateProc s0 = Stateful s0 . Kleisli . uncurry
 
 newtype Piecewise a = Piecewise { getPiecewise :: a }
@@ -174,13 +107,13 @@ newtype Piecewise a = Piecewise { getPiecewise :: a }
 newtype Event a = Event { getEvent :: Maybe a }
     deriving (Functor)
 
-stepper :: (Ord t) => a -> SigTrans t (Event a) (Piecewise a)
+stepper :: (Ord t, Monad m) => a -> SigTrans t m (Event a) (Piecewise a)
 stepper x0 = Stateful x0 . arr $ \(xcur,e) -> 
     case getEvent e of
         Nothing -> (xcur, Piecewise xcur)
         Just xnext -> (xnext, Piecewise xnext)
 
-countEvents :: (Ord t) => SigTrans t (Event a) (Event (Int,a))
+countEvents :: (Ord t, Monad m) => SigTrans t m (Event a) (Event (Int,a))
 countEvents = Stateful 0 . arr $ \(count,e) ->
     count `seq` case getEvent e of
         Nothing -> (count, Event Nothing)
@@ -192,6 +125,7 @@ data LongPressState t
     = LPIdle
     | LPWaiting t
 
+{-
 longPress :: (Ord t, Num t) => t -> SigTrans t (Event Bool) (Event LongPress)
 longPress delay = stateProc LPIdle $ \state e -> do
     wsize <- windowSize
@@ -202,3 +136,4 @@ longPress delay = stateProc LPIdle $ \state e -> do
             | otherwise -> restrict t >> return (LPWaiting (t-wsize), Event Nothing)
         (Just False, _) -> return (LPIdle, Event (Just PressUp))
         (Just True, _) -> return (LPWaiting delay, Event (Just PressDown))
+-}
